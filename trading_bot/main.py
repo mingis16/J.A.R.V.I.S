@@ -44,10 +44,15 @@ def main() -> int:
     cfg = load_yaml_config()
     trading_cfg = cfg["trading"]
     execution_cfg = cfg["execution"]
-    creds = get_mt5_credentials()
 
-    adapter = MT5Adapter(creds)
-    adapter.connect()
+    try:
+        creds = get_mt5_credentials()
+        adapter = MT5Adapter(creds)
+        adapter.connect()
+    except RuntimeError as exc:
+        logger.error(str(exc))
+        return 1
+
     try:
         if args.status:
             account = adapter.get_account_info()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from trading_bot.config import REPO_ROOT, load_env, load_yaml_config
@@ -14,6 +15,10 @@ def main() -> int:
     args = parser.parse_args()
 
     load_env()
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("Error: ANTHROPIC_API_KEY is not set. Add it to .env (see .env.example).", file=sys.stderr)
+        return 1
+
     cfg = load_yaml_config()
     orchestrator = Orchestrator(REPO_ROOT, cfg)
 

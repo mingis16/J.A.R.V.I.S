@@ -26,7 +26,10 @@ def rsi(series: pd.Series, period: int) -> pd.Series:
     loss = -delta.clip(upper=0)
     avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
-    rs = avg_gain / avg_loss.replace(0, float("nan"))
+    # avg_loss == 0 divides to +inf (or NaN if avg_gain is also 0), which the
+    # formula below already resolves to 100 (pure uptrend) or NaN (flat, no
+    # movement at all) — the latter is caught by fillna(50) as neutral.
+    rs = avg_gain / avg_loss
     result = 100 - (100 / (1 + rs))
     return result.fillna(50.0)
 

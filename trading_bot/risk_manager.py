@@ -48,11 +48,13 @@ def compute_position_size(
 
     raw_lots = risk_amount / loss_per_lot
     lots = round_to_step(raw_lots, volume_step)
-    lots = max(volume_min, min(volume_max, lots))
 
     if lots < volume_min:
+        # Do not clamp up to volume_min: that would silently risk more than
+        # risk_per_trade_pct asked for. Block the trade instead.
         return PositionSize(0.0, risk_amount, sl_distance_price, "sized lots below broker volume_min")
 
+    lots = min(lots, volume_max)
     return PositionSize(lots, risk_amount, sl_distance_price, None)
 
 

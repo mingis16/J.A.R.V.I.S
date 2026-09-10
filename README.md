@@ -75,8 +75,11 @@ review `risk_per_trade_pct` / `max_daily_loss_pct` / `max_open_positions` in
 pytest
 ```
 
-Covers position sizing math, the daily drawdown circuit breaker, and the indicator/signal
-logic. Doesn't require MT5 or network access.
+Covers position sizing math, the daily drawdown circuit breaker, indicator/signal logic, the
+paper/live trade execution flow, the assistant's tool registry (including the command
+denylist) and memory persistence, and the hand-rolled tool-use loop in the orchestrator and
+subagents (via a fake Anthropic client — no API key or network access needed). Runs on every
+push via GitHub Actions (`.github/workflows/tests.yml`).
 
 ## Architecture notes
 

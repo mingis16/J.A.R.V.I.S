@@ -1,0 +1,34 @@
+# No secrets in this file. Credentials come from .env / environment variables.
+
+trading:
+  symbol: "EURUSD"
+  timeframe: "M15"
+  fast_ema_period: 12
+  slow_ema_period: 26
+  rsi_period: 14
+  rsi_overbought: 70
+  rsi_oversold: 30
+  atr_period: 14
+  atr_sl_multiplier: 1.5
+  atr_tp_multiplier: 3.0
+  risk_per_trade_pct: 1.0
+  max_daily_loss_pct: 3.0
+  max_open_positions: 1
+  poll_seconds: 30
+  history_bars: 300
+
+execution:
+  # Hard-gated: even when true, a real order additionally requires the
+  # JARVIS_CONFIRM_LIVE env var to be set. See trading_bot/executor.py.
+  live_trading: false
+  magic_number: 20260910
+  deviation_points: 20
+  order_comment: "jarvis-bot"
+
+assistant:
+  model: "claude-opus-5"
+  max_tokens: 16000
+  memory_path: "state/memory.json"
+  trade_log_path: "state/trades.jsonl"
+  command_audit_path: "state/command_audit.log"
+  max_tool_iterations: 25

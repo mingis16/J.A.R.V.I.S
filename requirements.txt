@@ -1,0 +1,7 @@
+anthropic>=0.68.0
+MetaTrader5>=5.0.45
+pandas>=2.2
+numpy>=1.26
+pyyaml>=6.0
+python-dotenv>=1.0
+pytest>=8.0

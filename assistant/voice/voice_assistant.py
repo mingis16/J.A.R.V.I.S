@@ -67,6 +67,7 @@ class VoiceAssistant:
             transcript = self.transcriber.transcribe(audio, self.listener.sample_rate)
             if not transcript:
                 continue
+            print(f"[heard] {transcript}")
 
             woke, remainder = extract_command(transcript, self.wake_word)
             if not woke:
@@ -74,16 +75,18 @@ class VoiceAssistant:
 
             command = remainder
             if not command:
-                print(f"({self.name} is listening for your command...)")
+                self._say_and_print("Yes?")
                 try:
                     audio = self.listener.listen_for_utterance(timeout=self.active_timeout_s)
                 except KeyboardInterrupt:
                     print()
                     return 0
                 if audio is None:
+                    self._say_and_print(f"Didn't catch that — say '{self.wake_word}' again when you're ready.")
                     continue
                 command = self.transcriber.transcribe(audio, self.listener.sample_rate)
                 if not command:
+                    self._say_and_print(f"Didn't catch that — say '{self.wake_word}' again when you're ready.")
                     continue
 
             print(f"you> {command}")

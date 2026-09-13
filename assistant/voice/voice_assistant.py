@@ -94,7 +94,12 @@ class VoiceAssistant:
                 self._say_and_print("Goodbye.")
                 return 0
 
-            reply = self.orchestrator.chat(command)
+            try:
+                reply = self.orchestrator.chat(command)
+            except Exception as exc:  # a single bad API call must not kill a long-running voice session
+                print(f"Error calling the assistant: {type(exc).__name__}: {exc}", file=sys.stderr)
+                self._say_and_print("Sorry, I hit an error talking to my brain. Check the terminal for details.")
+                continue
             self._say_and_print(reply)
 
 

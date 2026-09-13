@@ -26,7 +26,7 @@ def main() -> int:
         print(orchestrator.chat(" ".join(args.message)))
         return 0
 
-    print("J.A.R.V.I.S. online. Type 'exit' to quit.")
+    print("Alex online. Type 'exit' to quit.")
     while True:
         try:
             user_input = input("you> ").strip()
@@ -38,7 +38,7 @@ def main() -> int:
         if user_input.lower() in {"exit", "quit"}:
             break
         reply = orchestrator.chat(user_input)
-        print(f"jarvis> {reply}")
+        print(f"alex> {reply}")
 
     return 0
 

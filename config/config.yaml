@@ -32,3 +32,23 @@ assistant:
   trade_log_path: "state/trades.jsonl"
   command_audit_path: "state/command_audit.log"
   max_tool_iterations: 25
+
+voice:
+  name: "Alex"
+  wake_word: "alex"
+  sample_rate: 16000
+  # Local speech-to-text (faster-whisper). "base" is a good CPU speed/accuracy
+  # tradeoff; use "small"/"medium" for better accuracy if you have a GPU.
+  whisper_model: "base"
+  whisper_device: "cpu"
+  whisper_compute_type: "int8"
+  # Voice activity detection tuning for segmenting mic input into utterances.
+  vad_silence_multiplier: 3.0
+  vad_min_speech_ms: 200
+  vad_silence_hangover_ms: 800
+  active_listen_timeout_s: 12
+  # Text-to-speech. "pyttsx3" = offline Windows SAPI voice, no API key.
+  # Swap to an ElevenLabs-backed engine later without touching voice_assistant.py.
+  tts_engine: "pyttsx3"
+  tts_rate: 180
+  tts_voice_id: null

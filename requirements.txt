@@ -5,3 +5,9 @@ numpy>=1.26
 pyyaml>=6.0
 python-dotenv>=1.0
 pytest>=8.0
+
+# Voice mode (scripts/run_voice_assistant.py)
+faster-whisper>=1.0.0   # local speech-to-text, no API key
+sounddevice>=0.4.6      # microphone capture
+pyttsx3>=2.90           # offline text-to-speech (Windows SAPI)
+pywin32>=306            # pyttsx3's Windows SAPI driver dependency

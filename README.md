@@ -5,9 +5,10 @@ Two things, sharing one repo:
 1. **`trading_bot/`** — a forex trading bot for MetaTrader 5. EMA-crossover + RSI-filtered
    signals, ATR-based stop loss / take profit, equity-based position sizing, and a daily
    drawdown circuit breaker. Defaults to **paper (simulated) mode**.
-2. **`assistant/`** — a Claude-powered personal assistant/orchestrator with real tools
-   (files, shell commands, memory, control of the trading bot) and the ability to spawn
-   focused subagents for bounded tasks.
+2. **`assistant/`** — a Claude-powered personal assistant/orchestrator named **Alex**, with real
+   tools (files, shell commands, memory, control of the trading bot), the ability to spawn
+   focused subagents for bounded tasks, and an optional wake-word voice mode
+   (`assistant/voice/`) — talk to it out loud instead of typing.
 
 ## Setup
 
@@ -40,6 +41,33 @@ the trading bot, and delegate subtasks to `researcher` / `coder` / `general` sub
 obviously catastrophic whole-drive commands and every command is logged to
 `state/command_audit.log`, but this is a safety net, not a sandbox — it's exactly as
 powerful as you typing the command yourself. Review the audit log periodically.
+
+## Talking to Alex by voice
+
+```bash
+python scripts/run_voice_assistant.py
+```
+
+Say **"Alex"** to wake it up (either alone, then wait for the prompt and speak your command,
+or in one breath: "Alex, what's my trading bot's status?"). It replies out loud and in the
+terminal. Say "exit", "quit", "stop", or "goodbye" to end the session, or Ctrl+C.
+
+How it works, entirely locally, no extra API key required:
+
+- **Speech-to-text**: [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (`base` model
+  by default) runs on your CPU. The first run downloads the model (~150MB) from Hugging Face.
+- **Voice activity detection**: a short ambient-noise calibration at startup, then a simple
+  energy-threshold detector segments your mic input into utterances — no push-to-talk key needed.
+- **Text-to-speech**: offline Windows SAPI voice via `pyttsx3`.
+
+All of this is tunable under `voice:` in `config/config.yaml` (wake word, Whisper model size,
+VAD sensitivity, TTS rate).
+
+**Swapping in an ElevenLabs voice later:** add an `ElevenLabsSpeaker` class with a
+`speak(text: str) -> None` method next to `Pyttsx3Speaker` in `assistant/voice/tts.py`, wire it
+up in `build_speaker()`, add your `ELEVENLABS_API_KEY` to `.env`, and set
+`voice.tts_engine: "elevenlabs"` in `config/config.yaml`. Nothing else in `voice_assistant.py`
+needs to change.
 
 ## Running the trading bot
 

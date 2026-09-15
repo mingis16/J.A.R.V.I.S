@@ -7,8 +7,9 @@ Two things, sharing one repo:
    drawdown circuit breaker. Defaults to **paper (simulated) mode**.
 2. **`assistant/`** — a Claude-powered personal assistant/orchestrator named **Alex**, with real
    tools (files, shell commands, memory, control of the trading bot), the ability to spawn
-   focused subagents for bounded tasks, and an optional wake-word voice mode
-   (`assistant/voice/`) — talk to it out loud instead of typing.
+   focused subagents for bounded tasks, an optional wake-word voice mode
+   (`assistant/voice/`) — talk to it out loud instead of typing — and a 24/7 background
+   daemon (`assistant/daemon/`) for unattended monitoring while you're away.
 
 ## Setup
 
@@ -68,6 +69,37 @@ VAD sensitivity, TTS rate).
 up in `build_speaker()`, add your `ELEVENLABS_API_KEY` to `.env`, and set
 `voice.tts_engine: "elevenlabs"` in `config/config.yaml`. Nothing else in `voice_assistant.py`
 needs to change.
+
+## Running Alex unattended (24/7 background daemon)
+
+```bash
+python scripts/run_daemon.py          # runs forever, Ctrl+C to stop
+python scripts/run_daemon.py --once   # run every routine one time immediately, then exit
+```
+
+This is a **manually-started long-running process** — start it before you step away or go to
+sleep, and leave the terminal open (or your PC will need to stay on and logged in). It runs a
+fixed set of routines on independent schedules, defined in `assistant/daemon/routines.py`:
+
+- **`trading_bot_health_check`** (every 15 min by default) — reads the trading bot's PID file
+  and recent trade log entries. Purely a read; never restarts anything itself.
+- **`dev_agent_routine`** (every 6 hours by default) — if `daemon.dev_project_path` in
+  `config/config.yaml` points at a repo, runs `git status`/`git diff`/`pytest` there and asks
+  Claude to investigate. Unset by default (no-op) until you have a project to point it at.
+- **`overnight_summary`** (once/day, `daemon.overnight_summary_time` in config) — reads the
+  daemon log and pending proposals and writes a plain-English recap to
+  `logs/summary_<date>.md`.
+
+**Safety boundary — enforced in code, not just prompted for:** none of these routines can write
+files, run arbitrary shell commands, or start/stop the trading bot while unattended. When a
+routine's Claude call (`dev_agent_routine`) thinks something should change, it can only call
+`propose_change`, which appends to `logs/proposals.jsonl` — nothing is applied automatically.
+Deterministic checks (health check, `git`/`pytest` calls) run fixed, hardcoded commands from our
+own code, never LLM-issued shell commands.
+
+**Reviewing what happened overnight:** just ask Alex — by voice or `run_assistant.py` — "what
+came up overnight?" (uses the new `list_proposals` tool), or read `logs/daemon.log` directly. If
+you agree with a proposal, tell Alex normally to carry it out; nothing auto-applies itself.
 
 ## Running the trading bot
 

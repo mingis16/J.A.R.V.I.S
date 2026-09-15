@@ -263,5 +263,42 @@ def build_registry(repo_root: Path, cfg: dict, memory) -> ToolRegistry:
             handler=status,
         )
     )
+    registry.register(
+        Tool(
+            name="list_proposals",
+            description=(
+                "List things the background daemon (scripts/run_daemon.py) noticed while running "
+                "unattended but did not act on itself — e.g. overnight monitoring findings or "
+                "suggested code changes. Use this when the user asks what happened overnight or "
+                "what's pending their review. Also points at the latest overnight summary file, if any."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"limit": {"type": "integer", "default": 20}},
+                "additionalProperties": False,
+            },
+            handler=_make_list_proposals(repo_root, cfg),
+        )
+    )
 
     return registry
+
+
+def _make_list_proposals(repo_root: Path, cfg: dict) -> Callable[[dict[str, Any]], str]:
+    from assistant.daemon.proposals import ProposalLog
+
+    daemon_cfg = cfg.get("daemon", {})
+    proposal_log = ProposalLog(repo_root / daemon_cfg.get("proposals_path", "logs/proposals.jsonl"))
+    logs_dir = repo_root / "logs"
+
+    def list_proposals(inp: dict[str, Any]) -> str:
+        proposals = proposal_log.tail(int(inp.get("limit", 20)))
+        summaries = sorted(logs_dir.glob("summary_*.md")) if logs_dir.exists() else []
+        latest_summary = str(summaries[-1]) if summaries else None
+        return json.dumps(
+            {"pending_proposals": proposals, "latest_overnight_summary_file": latest_summary},
+            indent=2,
+            default=str,
+        )
+
+    return list_proposals

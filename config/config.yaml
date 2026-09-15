@@ -52,3 +52,18 @@ voice:
   tts_engine: "pyttsx3"
   tts_rate: 180
   tts_voice_id: null
+
+daemon:
+  # Background scheduler (scripts/run_daemon.py). Fixed checks run
+  # automatically; anything that would change state (code, config, a
+  # running process, a trade) is written to proposals_path for the user to
+  # review and explicitly approve later — never auto-executed unattended.
+  trading_bot_health_check_interval_s: 900
+  # Set to an absolute repo path to enable dev_agent_routine. Left null,
+  # that routine is a documented no-op.
+  dev_project_path: null
+  dev_agent_interval_s: 21600
+  # 24h local time (HH:MM) at which the overnight_summary routine runs.
+  overnight_summary_time: "07:00"
+  log_path: "logs/daemon.log"
+  proposals_path: "logs/proposals.jsonl"

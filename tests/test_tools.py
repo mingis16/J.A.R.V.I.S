@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+
+from assistant.daemon.proposals import ProposalLog
 from assistant.memory import Memory
-from assistant.tools import ToolRegistry, Tool, _make_run_command, _read_file, _write_file
+from assistant.tools import ToolRegistry, Tool, _make_list_proposals, _make_run_command, _read_file, _write_file
 
 
 def test_write_then_read_file_roundtrip(tmp_path):
@@ -77,3 +80,33 @@ def test_memory_history_is_bounded(tmp_path):
     for i in range(510):
         mem.append_turn("user", f"turn {i}")
     assert len(mem.recent_history(limit=1000)) == 500
+
+
+def test_list_proposals_returns_recorded_proposals(tmp_path):
+    cfg = {"daemon": {"proposals_path": "logs/proposals.jsonl"}}
+    ProposalLog(tmp_path / "logs" / "proposals.jsonl").record(
+        routine="trading_bot_health_check",
+        title="Bot looks down",
+        description="No pid file found.",
+        suggested_action="python scripts/run_trading_bot.py",
+    )
+    list_proposals = _make_list_proposals(tmp_path, cfg)
+
+    result = json.loads(list_proposals({}))
+
+    assert len(result["pending_proposals"]) == 1
+    assert result["pending_proposals"][0]["title"] == "Bot looks down"
+    assert result["latest_overnight_summary_file"] is None
+
+
+def test_list_proposals_reports_latest_summary_file(tmp_path):
+    cfg = {"daemon": {"proposals_path": "logs/proposals.jsonl"}}
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "summary_2026-01-01.md").write_text("old", encoding="utf-8")
+    (logs_dir / "summary_2026-01-02.md").write_text("new", encoding="utf-8")
+    list_proposals = _make_list_proposals(tmp_path, cfg)
+
+    result = json.loads(list_proposals({}))
+
+    assert result["latest_overnight_summary_file"].endswith("summary_2026-01-02.md")

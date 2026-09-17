@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-import anthropic
-
+from assistant.anthropic_client import build_client
 from assistant.memory import Memory
 from assistant.subagents import run_subagent
 from assistant.tools import Tool, ToolRegistry, build_registry
@@ -37,7 +36,7 @@ investigate a bug in one file), consider spawn_subagent instead of doing it all 
 class Orchestrator:
     def __init__(self, repo_root, cfg: dict):
         self.cfg = cfg
-        self.client = anthropic.Anthropic()
+        self.client = build_client()
         self.model = cfg["assistant"]["model"]
         self.max_tokens = cfg["assistant"]["max_tokens"]
         self.max_iterations = cfg["assistant"]["max_tool_iterations"]

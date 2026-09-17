@@ -53,6 +53,11 @@ voice:
   tts_rate: 180
   tts_voice_id: null
 
+dashboard:
+  # Local-only web chat UI (scripts/run_dashboard.py). Bound to 127.0.0.1 —
+  # never exposed to the network — since Alex has real shell/file access.
+  port: 5000
+
 daemon:
   # Background scheduler (scripts/run_daemon.py). Fixed checks run
   # automatically; anything that would change state (code, config, a

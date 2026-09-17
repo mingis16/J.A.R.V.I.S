@@ -11,8 +11,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
-import anthropic
-
+from assistant.anthropic_client import build_client
 from assistant.daemon.proposals import ProposalLog
 from assistant.daemon.routines import ROUTINES, RoutineContext, RoutineFn
 from assistant.memory import Memory
@@ -141,7 +140,7 @@ def main() -> int:
 
     memory = Memory(REPO_ROOT / cfg["assistant"]["memory_path"])
     proposal_log = ProposalLog(REPO_ROOT / daemon_cfg.get("proposals_path", "logs/proposals.jsonl"))
-    client = anthropic.Anthropic() if os.environ.get("ANTHROPIC_API_KEY") else None
+    client = build_client() if os.environ.get("ANTHROPIC_API_KEY") else None
     ctx = RoutineContext(
         repo_root=REPO_ROOT,
         cfg=cfg,

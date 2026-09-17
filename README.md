@@ -8,8 +8,9 @@ Two things, sharing one repo:
 2. **`assistant/`** — a Claude-powered personal assistant/orchestrator named **Alex**, with real
    tools (files, shell commands, memory, control of the trading bot), the ability to spawn
    focused subagents for bounded tasks, an optional wake-word voice mode
-   (`assistant/voice/`) — talk to it out loud instead of typing — and a 24/7 background
-   daemon (`assistant/daemon/`) for unattended monitoring while you're away.
+   (`assistant/voice/`) — talk to it out loud instead of typing — a local web
+   **dashboard** (`assistant/dashboard/`) to chat with it from a browser, and a 24/7
+   background daemon (`assistant/daemon/`) for unattended monitoring while you're away.
 
 ## Setup
 
@@ -23,6 +24,9 @@ copy .env.example .env
 Fill in `.env`:
 
 - `ANTHROPIC_API_KEY` — required for the assistant.
+- `ANTHROPIC_WORKSPACE_ID` — only needed if your key isn't scoped to a single workspace (the
+  API rejects every request with "not scoped to a workspace" until this is set). Find it at
+  [console.anthropic.com](https://console.anthropic.com) under Settings > Workspaces.
 - `MT5_LOGIN` / `MT5_PASSWORD` / `MT5_SERVER` — required for the trading bot. Get these from
   your broker's MT5 account (a **demo account works identically** for paper-mode testing).
 - `MT5_TERMINAL_PATH` — only needed if the `MetaTrader5` Python package can't auto-locate your
@@ -69,6 +73,18 @@ VAD sensitivity, TTS rate).
 up in `build_speaker()`, add your `ELEVENLABS_API_KEY` to `.env`, and set
 `voice.tts_engine: "elevenlabs"` in `config/config.yaml`. Nothing else in `voice_assistant.py`
 needs to change.
+
+## Chatting with Alex from a browser (dashboard)
+
+```bash
+python scripts/run_dashboard.py
+```
+
+Opens a local web server at **http://127.0.0.1:5000** with a chat panel plus a sidebar showing
+live trading bot status and any pending overnight proposals. Bound to `127.0.0.1` only — never
+your local network — because Alex has real shell/file access; don't change the host binding in
+`assistant/dashboard/app.py` without adding authentication first. Port is configurable via
+`dashboard.port` in `config/config.yaml`.
 
 ## Running Alex unattended (24/7 background daemon)
 

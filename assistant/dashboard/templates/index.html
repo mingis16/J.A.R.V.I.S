@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ assistant_name }} Dashboard</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2e37;
+    --text: #e8e9ec;
+    --muted: #9aa0ac;
+    --accent: #5b8cff;
+    --user-bubble: #2a3550;
+    --assistant-bubble: #1f232c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .dot { width: 8px; height: 8px; border-radius: 50%; background: #3ecf6b; display: inline-block; margin-right: 8px; }
+  main {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    flex-wrap: wrap;
+  }
+  .chat-col {
+    flex: 3 1 420px;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    border-right: 1px solid var(--border);
+  }
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .msg { max-width: 75%; padding: 10px 14px; border-radius: 12px; line-height: 1.4; white-space: pre-wrap; word-wrap: break-word; }
+  .msg.user { align-self: flex-end; background: var(--user-bubble); }
+  .msg.assistant { align-self: flex-start; background: var(--assistant-bubble); }
+  .msg.pending { opacity: 0.6; font-style: italic; }
+  .msg .role { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .composer {
+    display: flex;
+    gap: 8px;
+    padding: 14px 20px;
+    border-top: 1px solid var(--border);
+  }
+  .composer input {
+    flex: 1;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 14px;
+  }
+  .composer button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 18px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .composer button:disabled { opacity: 0.5; cursor: default; }
+  .side-col {
+    flex: 1 1 260px;
+    padding: 16px 20px;
+    overflow-y: auto;
+    min-width: 240px;
+  }
+  .side-col h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 0 0 10px; }
+  .side-col pre {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    font-size: 12px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0 0 20px;
+  }
+  @media (max-width: 720px) {
+    main { flex-direction: column; }
+    .chat-col { border-right: none; border-bottom: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="dot"></span>{{ assistant_name }}</h1>
+  <span style="font-size:12px;color:var(--muted)">local dashboard</span>
+</header>
+<main>
+  <section class="chat-col">
+    <div class="messages" id="messages"></div>
+    <form class="composer" id="composer">
+      <input id="input" type="text" placeholder="Talk to {{ assistant_name }}..." autocomplete="off" autofocus>
+      <button type="submit" id="send">Send</button>
+    </form>
+  </section>
+  <section class="side-col">
+    <h2>Trading bot status</h2>
+    <pre id="trading-status">loading...</pre>
+    <h2>Overnight proposals</h2>
+    <pre id="proposals">loading...</pre>
+  </section>
+</main>
+<script>
+  const messagesEl = document.getElementById('messages');
+  const form = document.getElementById('composer');
+  const input = document.getElementById('input');
+  const sendBtn = document.getElementById('send');
+
+  function addMessage(role, text, pending) {
+    const el = document.createElement('div');
+    el.className = 'msg ' + role + (pending ? ' pending' : '');
+    el.innerHTML = '<span class="role">' + (role === 'user' ? 'you' : '{{ assistant_name }}') + '</span>';
+    el.append(document.createTextNode(text));
+    messagesEl.appendChild(el);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return el;
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    addMessage('user', text);
+    const pendingEl = addMessage('assistant', 'thinking...', true);
+    input.disabled = true;
+    sendBtn.disabled = true;
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text }),
+      });
+      const data = await res.json();
+      pendingEl.classList.remove('pending');
+      pendingEl.lastChild.textContent = res.ok ? data.reply : ('Error: ' + data.error);
+    } catch (err) {
+      pendingEl.classList.remove('pending');
+      pendingEl.lastChild.textContent = 'Error: ' + err;
+    } finally {
+      input.disabled = false;
+      sendBtn.disabled = false;
+      input.focus();
+    }
+  });
+
+  async function refreshStatus() {
+    try {
+      const res = await fetch('/api/status');
+      const data = await res.json();
+      document.getElementById('trading-status').textContent = data.trading_bot_status;
+      document.getElementById('proposals').textContent = data.proposals;
+    } catch (err) {
+      document.getElementById('trading-status').textContent = 'Error: ' + err;
+    }
+  }
+  refreshStatus();
+  setInterval(refreshStatus, 30000);
+</script>
+</body>
+</html>

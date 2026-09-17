@@ -11,3 +11,6 @@ faster-whisper>=1.0.0   # local speech-to-text, no API key
 sounddevice>=0.4.6      # microphone capture
 pyttsx3>=2.90           # offline text-to-speech (Windows SAPI)
 pywin32>=306            # pyttsx3's Windows SAPI driver dependency
+
+# Dashboard (scripts/run_dashboard.py)
+flask>=3.0

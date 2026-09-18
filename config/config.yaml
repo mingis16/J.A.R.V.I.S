@@ -53,6 +53,11 @@ voice:
   tts_rate: 180
   tts_voice_id: null
 
+telegram:
+  # Push a message for every new trade log entry (paper or live) to every
+  # TELEGRAM_ALLOWED_USER_IDS. Token/allowlist live in .env, not here.
+  notify_on_trade: true
+
 dashboard:
   # Local-only web chat UI (scripts/run_dashboard.py). Bound to 127.0.0.1 —
   # never exposed to the network — since Alex has real shell/file access.

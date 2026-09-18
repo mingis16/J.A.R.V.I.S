@@ -86,6 +86,30 @@ your local network — because Alex has real shell/file access; don't change the
 `assistant/dashboard/app.py` without adding authentication first. Port is configurable via
 `dashboard.port` in `config/config.yaml`.
 
+## Chatting with Alex from Telegram (and getting trading signals on your phone)
+
+```bash
+python scripts/run_telegram_bot.py
+```
+
+Polling-based — no public server, webhook, or open port needed, so it works from behind any
+home network. Setup:
+
+1. Message **@BotFather** on Telegram, send `/newbot`, follow the prompts, and copy the token
+   it gives you into `TELEGRAM_BOT_TOKEN` in `.env`.
+2. Leave `TELEGRAM_ALLOWED_USER_IDS` empty and run the script. Send the bot any message — it'll
+   reply with your numeric Telegram user ID (and do nothing else).
+3. Put that ID in `TELEGRAM_ALLOWED_USER_IDS` in `.env` (comma-separate more IDs if needed) and
+   restart the script. Now it actually talks to you.
+
+**Security:** this bot has the exact same shell/file access as the CLI, voice, and dashboard.
+Only user IDs in `TELEGRAM_ALLOWED_USER_IDS` ever get a real response — everyone else is
+silently ignored, so a stranger who finds your bot's username can't do anything with it.
+
+**Trading signals:** every new entry in `state/trades.jsonl` (paper or live) is automatically
+pushed as a message to everyone in the allowlist — toggle with `telegram.notify_on_trade` in
+`config/config.yaml`.
+
 ## Running Alex unattended (24/7 background daemon)
 
 ```bash

@@ -45,7 +45,9 @@ python scripts/run_assistant.py "what's my trading bot's status?"   # one-shot
 ```
 
 It can read/write files, run shell commands, remember facts across sessions, start/stop/check
-the trading bot, and delegate subtasks to `researcher` / `coder` / `general` subagents.
+the trading bot, and delegate subtasks to `researcher` / `coder` / `general` subagents, or their
+trading-desk-flavored variants `quant_research` / `quant_dev` / `risk_officer` (same real
+capabilities, narrower brief — none of them have authority over the live-trading gate).
 
 **`run_command` executes real shell commands on this machine.** There's a denylist for
 obviously catastrophic whole-drive commands and every command is logged to
@@ -198,6 +200,22 @@ target — see `signal_engine/REPORT.md`'s Limitations section for what that mea
 in the results, along with the reliability diagram, cost-sensitivity table, and per-year/regime
 breakdown. As of the last `--train` run, **no pair cleared the probability + expectancy gate in
 any walk-forward fold** — a valid, honest "no edge found" result, not a bug.
+
+### Grading a week of paper signals
+
+Before funding a live account, run a testing week: leave `trading_bot` running in paper mode
+(volume source) and the daemon's hourly `signal_engine_check` routine running (calibrated but
+likely quiet, per the backtest above) side by side, then grade what actually happened:
+
+```bash
+python scripts/grade_week.py                    # this week (Mon 00:00 UTC -> now)
+python scripts/grade_week.py --since 2026-09-15  # custom start date
+```
+
+Pulls subsequent real price bars from MT5 for every signal in range and resolves TP/SL/timeout —
+reports hit rate **and mean R side by side**, by source and by day, and says plainly when the
+sample is too small (<20 resolved trades) to mean much. Logic lives in `signal_engine/grading.py`
+(unit-tested on synthetic bars, no MT5 needed for tests).
 
 ## Tests
 

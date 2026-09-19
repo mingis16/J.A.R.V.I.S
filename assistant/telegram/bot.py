@@ -21,6 +21,9 @@ from assistant.orchestrator import Orchestrator
 from assistant.telegram.client import TelegramClient
 from trading_bot.trade_log import TradeLog
 
+from signal_engine.config import SignalEngineConfig
+from signal_engine.live_checks import LiveCheckLog
+
 logger = logging.getLogger("assistant.telegram")
 
 MESSAGE_LIMIT = 4000  # Telegram's real limit is 4096; leave headroom
@@ -51,6 +54,16 @@ def format_trade_message(entry: dict[str, Any]) -> str:
     )
 
 
+def format_signal_engine_message(signal: dict[str, Any]) -> str:
+    return (
+        f"🎯 signal_engine: {signal.get('pair')} {signal.get('direction')}\n"
+        f"entry={signal.get('entry')} stop={signal.get('stop')} tp={signal.get('take_profit')}\n"
+        f"p_calibrated={signal.get('p_tp_calibrated')} expectancy={signal.get('expectancy_R_after_costs')}R "
+        f"(sample size {signal.get('sample_size_in_bucket')})\n"
+        f"regime: {signal.get('regime')}"
+    )
+
+
 class TelegramBot:
     def __init__(self, repo_root: Path, cfg: dict, token: str, allowed_ids: set[int]):
         self.client = TelegramClient(token)
@@ -59,6 +72,14 @@ class TelegramBot:
         self.trade_log = TradeLog(repo_root / cfg["assistant"]["trade_log_path"])
         self.notify_on_trade = cfg.get("telegram", {}).get("notify_on_trade", True)
         self._last_trade_count = len(self.trade_log.tail(10**9))
+
+        self.live_check_log: LiveCheckLog | None = None
+        self._last_check_count = 0
+        if "signal_engine" in cfg:
+            se_cfg = SignalEngineConfig.from_yaml(cfg, repo_root)
+            self.live_check_log = LiveCheckLog(se_cfg.report_dir / "live_checks.jsonl")
+            self._last_check_count = len(self.live_check_log.all())
+
         self._offset: int | None = None
         self._shutdown = False
 
@@ -112,6 +133,17 @@ class TelegramBot:
                 self._send(uid, message)
         self._last_trade_count = len(entries)
 
+    def _check_new_signal_engine_hits(self) -> None:
+        if self.live_check_log is None or not self.allowed_ids:
+            return
+        checks = self.live_check_log.all()
+        for check in new_trades_since(checks, self._last_check_count):
+            if check.get("has_signal") and check.get("signal"):
+                message = format_signal_engine_message(check["signal"])
+                for uid in self.allowed_ids:
+                    self._send(uid, message)
+        self._last_check_count = len(checks)
+
     def run_forever(self) -> None:
         signal.signal(signal.SIGINT, self._handle_sigint)
         if self.allowed_ids:
@@ -134,6 +166,7 @@ class TelegramBot:
                 logger.exception("Telegram poll failed; retrying shortly.")
                 time.sleep(5)
             self._check_new_trades()
+            self._check_new_signal_engine_hits()
         logger.info("Telegram bot stopped.")
 
 

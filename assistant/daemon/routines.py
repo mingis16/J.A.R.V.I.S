@@ -18,6 +18,11 @@ from assistant.daemon.proposals import ProposalLog
 from assistant.daemon.restricted_tools import build_readonly_registry
 from trading_bot.trade_log import TradeLog
 
+from signal_engine.config import SignalEngineConfig
+from signal_engine.data_loader import pull_history
+from signal_engine.live_checks import LiveCheckLog
+from signal_engine.signal_emitter import latest_signal
+
 logger = logging.getLogger("assistant.daemon")
 
 
@@ -28,6 +33,46 @@ class RoutineContext:
     memory: object
     proposal_log: ProposalLog
     client: anthropic.Anthropic | None
+
+
+def _current_spread_price(symbol: str) -> float:
+    from trading_bot.config import get_mt5_credentials
+    from trading_bot.mt5_adapter import MT5Adapter
+
+    creds = get_mt5_credentials()
+    adapter = MT5Adapter(creds)
+    adapter.connect()
+    try:
+        info = adapter.get_symbol_info(symbol)
+        return float(info.spread) * float(info.point)
+    finally:
+        adapter.disconnect()
+
+
+def signal_engine_check(ctx: RoutineContext) -> None:
+    """Runs the calibrated signal engine against live data and logs every
+    check (signal or not) — this is the source of truth for grading the
+    week, not just a notification trigger."""
+    if "signal_engine" not in ctx.cfg:
+        logger.info("signal_engine_check: no signal_engine config block — skipping.")
+        return
+
+    se_cfg = SignalEngineConfig.from_yaml(ctx.cfg, ctx.repo_root)
+    live_check_log = LiveCheckLog(se_cfg.report_dir / "live_checks.jsonl")
+
+    for pair in se_cfg.pairs:
+        try:
+            df = pull_history(pair, se_cfg.timeframe, se_cfg.history_bars, se_cfg.cache_dir)
+            spread_price = _current_spread_price(pair)
+            signal = latest_signal(df, se_cfg, pair, spread_price)
+        except Exception:
+            logger.exception("signal_engine_check: failed for %s", pair)
+            continue
+        live_check_log.record(pair, signal)
+        if signal:
+            logger.info("signal_engine_check: SIGNAL for %s: %s", pair, signal)
+        else:
+            logger.info("signal_engine_check: no signal for %s", pair)
 
 
 def trading_bot_health_check(ctx: RoutineContext) -> None:
@@ -159,6 +204,7 @@ RoutineFn = Callable[[RoutineContext], None]
 
 ROUTINES: dict[str, RoutineFn] = {
     "trading_bot_health_check": trading_bot_health_check,
+    "signal_engine_check": signal_engine_check,
     "dev_agent_routine": dev_agent_routine,
     "overnight_summary": overnight_summary,
 }

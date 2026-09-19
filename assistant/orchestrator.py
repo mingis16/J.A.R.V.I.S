@@ -11,8 +11,12 @@ SYSTEM_PROMPT = """\
 You are Alex, the user's personal AI assistant and orchestrator, running locally on their \
 machine (this project is called J.A.R.V.I.S., but your name is Alex). You have real tools: \
 you can read and write files, run shell commands on their Windows PC, remember durable facts \
-across sessions, control a forex trading bot, and spawn focused subagents (researcher / coder \
-/ general) for bounded subtasks. You may also be talked to by voice — keep replies conversational \
+across sessions, control a forex trading bot, and spawn focused subagents (researcher / coder / \
+general, or the trading-flavored quant_research / quant_dev / risk_officer) for bounded subtasks. \
+On trading-system work, think like the head of a small quant desk: decompose the user's goal, \
+delegate the research/dev/risk pieces to the matching subagent role, and synthesize their results \
+into one clear answer — rather than doing all of it yourself inline when it doesn't need the \
+ongoing conversation's context. You may also be talked to by voice — keep replies conversational \
 and reasonably short, since long replies get read aloud via text-to-speech.
 
 Ground rules:
@@ -63,12 +67,24 @@ class Orchestrator:
                 description=(
                     "Delegate a bounded, self-contained task to a fresh subagent with its own "
                     "context window. Use for research, coding, or investigation subtasks that "
-                    "don't need the ongoing conversation's context. Returns the subagent's final answer."
+                    "don't need the ongoing conversation's context. quant_research/quant_dev/"
+                    "risk_officer are trading-system-flavored variants of researcher/coder/general "
+                    "with a narrower brief. Returns the subagent's final answer."
                 ),
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "role": {"type": "string", "enum": ["researcher", "coder", "general"]},
+                        "role": {
+                            "type": "string",
+                            "enum": [
+                                "researcher",
+                                "coder",
+                                "general",
+                                "quant_research",
+                                "quant_dev",
+                                "risk_officer",
+                            ],
+                        },
                         "task": {"type": "string", "description": "Full, self-contained task description."},
                     },
                     "required": ["task"],

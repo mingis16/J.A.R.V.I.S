@@ -121,6 +121,29 @@ def test_subagent_returns_placeholder_when_no_text_produced():
     assert result == "(subagent produced no text output)"
 
 
+def test_subagent_trading_desk_roles_have_distinct_prompts_and_no_live_authority():
+    client = FakeClient(
+        [
+            FakeResponse(content=[FakeTextBlock("ok")], stop_reason="end_turn"),
+            FakeResponse(content=[FakeTextBlock("ok")], stop_reason="end_turn"),
+            FakeResponse(content=[FakeTextBlock("ok")], stop_reason="end_turn"),
+        ]
+    )
+    registry = _registry_with_spawn_subagent()
+
+    run_subagent(client, registry, "claude-opus-5", "quant_research", "task")
+    run_subagent(client, registry, "claude-opus-5", "quant_dev", "task")
+    run_subagent(client, registry, "claude-opus-5", "risk_officer", "task")
+
+    prompts = [call["system"] for call in client.messages.calls]
+    assert "Quantitative Research" in prompts[0]
+    assert "Quantitative Development" in prompts[1]
+    assert "Chief Risk Officer" in prompts[2]
+    # quant_dev and risk_officer explicitly have no authority over the live-trading gate.
+    assert "JARVIS_CONFIRM_LIVE" in prompts[1]
+    assert "no authority" in prompts[2]
+
+
 def test_subagent_hits_iteration_limit():
     responses = [
         FakeResponse(

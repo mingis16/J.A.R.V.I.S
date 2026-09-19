@@ -49,6 +49,11 @@ def build_specs(cfg: dict) -> list[RoutineSpec]:
             interval_s=daemon_cfg.get("trading_bot_health_check_interval_s", 900),
         ),
         RoutineSpec(
+            "signal_engine_check",
+            ROUTINES["signal_engine_check"],
+            interval_s=daemon_cfg.get("signal_engine_check_interval_s", 3600),
+        ),
+        RoutineSpec(
             "dev_agent_routine",
             ROUTINES["dev_agent_routine"],
             interval_s=daemon_cfg.get("dev_agent_interval_s", 21600),

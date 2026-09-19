@@ -17,3 +17,7 @@ flask>=3.0
 
 # Telegram front-end (scripts/run_telegram_bot.py)
 httpx>=0.27  # already pulled in transitively by anthropic; pinned directly since we import it
+
+# Signal engine (scripts/run_signal_engine.py)
+scikit-learn>=1.4
+matplotlib>=3.8

@@ -9,8 +9,13 @@ Two things, sharing one repo:
    tools (files, shell commands, memory, control of the trading bot), the ability to spawn
    focused subagents for bounded tasks, an optional wake-word voice mode
    (`assistant/voice/`) — talk to it out loud instead of typing — a local web
-   **dashboard** (`assistant/dashboard/`) to chat with it from a browser, and a 24/7
-   background daemon (`assistant/daemon/`) for unattended monitoring while you're away.
+   **dashboard** (`assistant/dashboard/`) to chat with it from a browser, a **Telegram**
+   front-end (`assistant/telegram/`) for chat + trading-signal push notifications from your
+   phone, and a 24/7 background daemon (`assistant/daemon/`) for unattended monitoring
+   while you're away.
+3. **`signal_engine/`** — a standalone, statistically-honest research pipeline that scores the
+   trading bot's EMA-cross setup with a calibrated probability model instead of a raw hit-rate
+   target. Separate from live/paper execution above — see its own section below.
 
 ## Setup
 
@@ -169,6 +174,31 @@ Before ever going live: run against a **demo MT5 account** for a meaningful stre
 review `risk_per_trade_pct` / `max_daily_loss_pct` / `max_open_positions` in
 `config/config.yaml` — they are the only things standing between a bad signal and real losses.
 
+## Signal engine (calibrated research pipeline)
+
+```bash
+python scripts/run_signal_engine.py --train   # walk-forward backtest, writes signal_engine/REPORT.md
+python scripts/run_signal_engine.py --emit     # print today's signal (if any) per configured pair
+```
+
+Full spec at [`prompts/signal_engine_spec.md`](prompts/signal_engine_spec.md). The short version:
+**don't optimize hit rate** (trivially gameable by moving TP close to entry) — optimize
+**calibration** (when the model says 80%, it should be right 75-85% of the time) and
+**expectancy after costs**, and only emit a signal when both clear a threshold. It scores the
+existing EMA-cross setup from `trading_bot/strategy.py` with a logistic-regression baseline,
+calibrated on a held-out validation split, evaluated with purged/embargoed walk-forward folds so
+labels can't leak across the train/test boundary.
+
+Standalone from the trading bot's live/paper execution above — running `--train` or `--emit`
+never places, logs, or affects a real or simulated trade.
+
+**Known limitation, stated upfront:** the MT5 demo account only provides ~3.2 years of H1 history
+(a broker/server-side cap, not fixable by requesting more bars), short of the spec's 5-year
+target — see `signal_engine/REPORT.md`'s Limitations section for what that means for confidence
+in the results, along with the reliability diagram, cost-sensitivity table, and per-year/regime
+breakdown. As of the last `--train` run, **no pair cleared the probability + expectancy gate in
+any walk-forward fold** — a valid, honest "no edge found" result, not a bug.
+
 ## Tests
 
 ```bash
@@ -177,9 +207,11 @@ pytest
 
 Covers position sizing math, the daily drawdown circuit breaker, indicator/signal logic, the
 paper/live trade execution flow, the assistant's tool registry (including the command
-denylist) and memory persistence, and the hand-rolled tool-use loop in the orchestrator and
-subagents (via a fake Anthropic client — no API key or network access needed). Runs on every
-push via GitHub Actions (`.github/workflows/tests.yml`).
+denylist) and memory persistence, the hand-rolled tool-use loop in the orchestrator and
+subagents (via a fake Anthropic client — no API key or network access needed), and the signal
+engine's triple-barrier labeling, purged walk-forward splits, cost math, calibration metrics,
+and the spec-required no-lookahead leakage test (all on synthetic data — no MT5 connection
+needed). Runs on every push via GitHub Actions (`.github/workflows/tests.yml`).
 
 ## Architecture notes
 

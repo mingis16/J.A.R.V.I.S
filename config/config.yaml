@@ -11,8 +11,8 @@ trading:
   atr_period: 14
   atr_sl_multiplier: 1.5
   atr_tp_multiplier: 3.0
-  risk_per_trade_pct: 1.0
-  max_daily_loss_pct: 3.0
+  risk_per_trade_pct: 1.0    # low end of the requested 1-2% band for a fresh live account
+  max_daily_loss_pct: 2.0    # tightened from 3.0 — halts new signals for the rest of the UTC day once tripped
   max_open_positions: 1
   poll_seconds: 30
   history_bars: 300

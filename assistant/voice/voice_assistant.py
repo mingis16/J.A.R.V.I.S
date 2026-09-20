@@ -46,7 +46,10 @@ class VoiceAssistant:
 
     def _say_and_print(self, text: str) -> None:
         print(f"{self.name}> {text}")
-        self.speaker.speak(text)
+        try:
+            self.speaker.speak(text)
+        except Exception as exc:
+            print(f"(TTS failed: {type(exc).__name__}: {exc} — reply was printed above, just not spoken)")
 
     def run(self) -> int:
         print(f"{self.name} is listening. Say '{self.wake_word}' to wake it, Ctrl+C to quit.")

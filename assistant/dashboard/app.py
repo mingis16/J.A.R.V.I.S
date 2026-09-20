@@ -19,7 +19,8 @@ TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 def create_app(repo_root: Path, cfg: dict) -> Flask:
     app = Flask(__name__, template_folder=str(TEMPLATE_DIR))
     orchestrator = Orchestrator(repo_root, cfg)
-    lock = threading.Lock()  # Orchestrator.chat() mutates shared state; serialize requests
+    chat_lock = threading.Lock()  # Orchestrator.chat() mutates shared state; serialize chat requests only —
+    # status reads are independent so a slow/stuck chat can't freeze the sidebar too.
 
     @app.get("/")
     def index():
@@ -32,7 +33,7 @@ def create_app(repo_root: Path, cfg: dict) -> Flask:
         message = (data.get("message") or "").strip()
         if not message:
             return jsonify({"error": "empty message"}), 400
-        with lock:
+        with chat_lock:
             try:
                 reply = orchestrator.chat(message)
             except Exception as exc:
@@ -41,9 +42,11 @@ def create_app(repo_root: Path, cfg: dict) -> Flask:
 
     @app.get("/api/status")
     def status():
-        with lock:
-            trading_status = orchestrator.registry.execute("trading_bot_status", {})
-            proposals = orchestrator.registry.execute("list_proposals", {})
+        # Deliberately no lock: these tools only read files, and status must
+        # keep working even while a chat request is in flight (including a
+        # slow or stuck one) so the UI doesn't appear to freeze entirely.
+        trading_status = orchestrator.registry.execute("trading_bot_status", {})
+        proposals = orchestrator.registry.execute("list_proposals", {})
         return jsonify({"trading_bot_status": trading_status, "proposals": proposals})
 
     return app
@@ -63,7 +66,7 @@ def main() -> int:
     app = create_app(REPO_ROOT, cfg)
     port = cfg.get("dashboard", {}).get("port", 5000)
     print(f"Dashboard running at http://127.0.0.1:{port} (Ctrl+C to stop)")
-    app.run(host="127.0.0.1", port=port, debug=False)
+    app.run(host="127.0.0.1", port=port, debug=False, threaded=True)
     return 0
 
 

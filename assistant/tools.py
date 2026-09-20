@@ -80,34 +80,47 @@ def _write_file(inp: dict[str, Any]) -> str:
     return f"Wrote {len(content)} chars to {path}"
 
 
+MAX_RUN_COMMAND_TIMEOUT_SECONDS = 120  # no single command may block the tool loop longer than this
+
+
 def _make_run_command(audit_path: Path) -> Callable[[dict[str, Any]], str]:
     audit_path.parent.mkdir(parents=True, exist_ok=True)
 
     def run_command(inp: dict[str, Any]) -> str:
         command = inp["command"]
-        timeout = int(inp.get("timeout_seconds", 60))
+        requested_timeout = int(inp.get("timeout_seconds", 60))
+        timeout = min(requested_timeout, MAX_RUN_COMMAND_TIMEOUT_SECONDS)
 
         for pattern in _DANGEROUS_PATTERNS:
             if pattern.search(command):
                 _audit(audit_path, command, "BLOCKED", "matched dangerous-pattern denylist")
                 return "Error: command blocked by safety denylist (looked destructive to a whole drive/filesystem)."
 
+        # stdin=DEVNULL so an interactive prompt (e.g. an installer's UAC/license
+        # confirmation, which has nothing to render to in this headless context)
+        # fails/EOFs immediately instead of hanging until the timeout.
+        proc = subprocess.Popen(
+            command,
+            shell=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
         try:
-            proc = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
+            output, _ = proc.communicate(timeout=timeout)
             outcome = f"exit_code={proc.returncode}"
             _audit(audit_path, command, outcome, "")
-            output = (proc.stdout or "") + (proc.stderr or "")
-            output = output[:8000]
-            return f"exit_code: {proc.returncode}\n{output}"
+            return f"exit_code: {proc.returncode}\n{(output or '')[:8000]}"
         except subprocess.TimeoutExpired:
-            _audit(audit_path, command, "TIMEOUT", f"exceeded {timeout}s")
-            return f"Error: command timed out after {timeout}s"
+            # shell=True spawns a shell wrapper (cmd.exe) as the direct child;
+            # a hung grandchild (e.g. a stuck installer) would otherwise be
+            # orphaned and keep running after we give up on it. Kill the whole
+            # tree, not just the immediate process.
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+            proc.wait()
+            _audit(audit_path, command, "TIMEOUT", f"exceeded {timeout}s (killed process tree)")
+            return f"Error: command timed out after {timeout}s and was killed, including any child processes it spawned."
 
     return run_command
 
@@ -195,13 +208,24 @@ def build_registry(repo_root: Path, cfg: dict, memory) -> ToolRegistry:
                 "Execute a shell command on the user's local Windows machine and return its "
                 "stdout/stderr/exit code. Every call is logged to an audit file. Obviously "
                 "destructive whole-drive commands are blocked. Use for builds, tests, git, "
-                "launching tools, querying system state, etc."
+                "launching tools, querying system state, etc. timeout_seconds is capped at "
+                f"{MAX_RUN_COMMAND_TIMEOUT_SECONDS}s regardless of what you request — this tool "
+                "call blocks the whole conversation until it returns, so anything that could "
+                "genuinely take longer (a large download, a slow install) needs to be split into "
+                "steps you can check on across multiple calls, not one long-running command. Runs "
+                "with no stdin: a command that waits on an interactive prompt (a license/UAC "
+                "confirmation, a y/n question) will fail fast instead of hanging — pass any "
+                "'--yes'/'--silent'/'--accept-*' non-interactive flag the command supports."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "command": {"type": "string"},
-                    "timeout_seconds": {"type": "integer", "default": 60},
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "default": 60,
+                        "maximum": MAX_RUN_COMMAND_TIMEOUT_SECONDS,
+                    },
                 },
                 "required": ["command"],
                 "additionalProperties": False,

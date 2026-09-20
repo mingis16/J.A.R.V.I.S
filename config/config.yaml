@@ -35,7 +35,7 @@ assistant:
 
 voice:
   name: "Alex"
-  wake_word: "alex"
+  wake_word: "hey alex"
   sample_rate: 16000
   # Local speech-to-text (faster-whisper). "base" is a good CPU speed/accuracy
   # tradeoff; use "small"/"medium" for better accuracy if you have a GPU.
@@ -46,7 +46,7 @@ voice:
   vad_silence_multiplier: 3.0
   vad_min_speech_ms: 200
   vad_silence_hangover_ms: 800
-  active_listen_timeout_s: 12
+  active_listen_timeout_s: 15
   # Text-to-speech. "pyttsx3" = offline Windows SAPI voice, no API key.
   # Swap to an ElevenLabs-backed engine later without touching voice_assistant.py.
   tts_engine: "pyttsx3"

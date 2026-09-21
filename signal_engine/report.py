@@ -15,8 +15,6 @@ import numpy as np
 from signal_engine.backtest import BacktestReport
 from signal_engine.config import SignalEngineConfig
 
-DATA_YEARS_AVAILABLE = 3.2  # see data_loader.py docstring — MT5 demo history ceiling
-
 
 def _plot_reliability(report: BacktestReport, out_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(5, 5))
@@ -202,16 +200,29 @@ def write_report(reports: list[BacktestReport], cfg: SignalEngineConfig) -> Path
                 "This should be near zero; if it isn't, the pipeline has a leak.\n"
             )
 
+    min_years = min(((r.data_end - r.data_start).days / 365.25 for r in reports), default=0.0)
+    data_depth_note = (
+        f"- **Data depth: {min_years:.1f} years, meets the 5+ year target.** MT5 history ceilings "
+        "are broker/server-specific — this ran against whatever account is configured in `.env` "
+        "at generation time (check the per-pair date ranges above); a different account or a demo "
+        "server may give a shorter window. If a future run shows less than ~5 years, treat "
+        "per-year/per-regime breakdowns with the same caution as before: fewer independent years "
+        "to draw on than is ideal.\n"
+        if min_years >= 5
+        else (
+            f"- **Data depth: {min_years:.1f} years, short of the 5+ year target.** MT5 history "
+            "ceilings are broker/server-specific — this account's server is limiting how far back "
+            "data goes (check the per-pair date ranges above). This likely means fewer full "
+            "volatility/rate-cycle regimes are represented than the spec intended, and any "
+            "per-year/per-regime breakdown above has fewer independent years to draw on than is "
+            "ideal. To close this gap, use an account/server with deeper history, or pull from a "
+            "dedicated data vendor (e.g. Dukascopy tick data resampled to H1) instead.\n"
+        )
+    )
+
     sections.append("## Limitations\n")
     sections.append(
-        f"- **Data depth: {DATA_YEARS_AVAILABLE:.1f} years, not the 5+ years the spec asked for.** "
-        "The MT5 demo server (`MetaQuotes-Demo`) caps `copy_rates_from_pos` at 20,000 H1 bars "
-        "regardless of the count requested — a broker/server-side history retention limit, "
-        "confirmed identical across all three pairs (all start 2023-06-29/30). This likely means "
-        "fewer full volatility/rate-cycle regimes are represented than the spec intended, and any "
-        "per-year/per-regime breakdown above has fewer independent years to draw on than is ideal. "
-        "To close this gap, pull deeper history from a dedicated data vendor (e.g. Dukascopy tick "
-        "data resampled to H1, or a paid provider) rather than a demo trading account.\n"
+        data_depth_note +
         "- **Spread/slippage cost model is a live snapshot, not historical.** H1 OHLC bars carry no "
         "historical bid/ask spread; the cost model uses the current MT5 spread as a proxy for every "
         "historical bar. Spreads widen materially around news and session opens/closes, so realized "

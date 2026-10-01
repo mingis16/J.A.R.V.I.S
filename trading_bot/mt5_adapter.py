@@ -126,6 +126,39 @@ class MT5Adapter:
         positions = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
         return list(positions) if positions is not None else []
 
+    def resolve_symbol(self, base: str) -> str | None:
+        """Broker symbol name for a base like "EURUSD": Exness suffixes it per
+        account type ("EURUSDm" on Standard, "EURUSDc" on Standard Cent), so
+        config lists bases and this finds whatever this account trades."""
+        candidates = mt5.symbols_get(f"{base}*") or ()
+        tradable = [s for s in candidates if s.trade_mode == mt5.SYMBOL_TRADE_MODE_FULL]
+        if not tradable:
+            return None
+        name = min((s.name for s in tradable), key=len)
+        mt5.symbol_select(name, True)
+        return name
+
+    def calc_margin(self, symbol: str, is_buy: bool, volume: float, price: float) -> float:
+        order_type = mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL
+        margin = mt5.order_calc_margin(order_type, symbol, volume, price)
+        if margin is None:
+            raise RuntimeError(f"order_calc_margin('{symbol}') failed: {mt5.last_error()}")
+        return float(margin)
+
+    def modify_position_sltp(self, position: Any, sl: float, tp: float) -> OrderResult:
+        request = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "symbol": position.symbol,
+            "position": position.ticket,
+            "sl": sl,
+            "tp": tp,
+        }
+        result = mt5.order_send(request)
+        if result is None:
+            return OrderResult(False, None, str(mt5.last_error()), None, None)
+        ok = result.retcode == mt5.TRADE_RETCODE_DONE
+        return OrderResult(ok, result.retcode, result.comment, position.ticket if ok else None, None)
+
     def close_position(self, position: Any, deviation: int = 20) -> OrderResult:
         symbol = position.symbol
         volume = position.volume

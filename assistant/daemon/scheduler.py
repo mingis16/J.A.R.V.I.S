@@ -25,10 +25,16 @@ class RoutineSpec:
     fn: RoutineFn
     interval_s: float | None = None
     daily_at: str | None = None  # "HH:MM", local time
+    hourly_at_minute: int | None = None  # once per hour, at/after this minute
 
 
 def is_due(spec: RoutineSpec, last_run: Optional[datetime], now: datetime) -> bool:
     """Pure scheduling decision — no I/O, easy to unit test."""
+    if spec.hourly_at_minute is not None:
+        if now.minute < spec.hourly_at_minute:
+            return False
+        this_slot = now.replace(minute=spec.hourly_at_minute, second=0, microsecond=0)
+        return last_run is None or last_run < this_slot
     if spec.interval_s is not None:
         return last_run is None or (now - last_run).total_seconds() >= spec.interval_s
     if spec.daily_at is not None:
@@ -62,6 +68,12 @@ def build_specs(cfg: dict) -> list[RoutineSpec]:
             "overnight_summary",
             ROUTINES["overnight_summary"],
             daily_at=daemon_cfg.get("overnight_summary_time", "07:00"),
+        ),
+        RoutineSpec(
+            "trading_desk_cycle",
+            ROUTINES["trading_desk_cycle"],
+            # A couple of minutes past the hour, so the H1 candle has closed.
+            hourly_at_minute=cfg.get("trading_desk", {}).get("run_at_minute", 2),
         ),
     ]
 

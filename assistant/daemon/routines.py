@@ -105,7 +105,7 @@ def trading_bot_health_check(ctx: RoutineContext) -> None:
         return
 
     logger.info("trading_bot_health_check: running (PID %s), %d recent trade log entries.", pid, len(recent))
-    errors = [r for r in recent if r.get("status") not in (None, "filled", "simulated")]
+    errors = [r for r in recent if r.get("status") not in (None, "filled", "simulated", "closed", "modified")]
     if errors:
         ctx.proposal_log.record(
             routine="trading_bot_health_check",
@@ -220,6 +220,26 @@ def overnight_summary(ctx: RoutineContext) -> None:
     logger.info("overnight_summary: wrote %s", out_path)
 
 
+def trading_desk_cycle(ctx: RoutineContext) -> None:
+    """Alex's autonomous trading desk — the one routine that may act, not just
+    propose. Deliberate exception to the daemon's read-only rule, gated by
+    trading_desk.enabled, and for real money also trading_desk.live AND
+    JARVIS_CONFIRM_LIVE. Its tool surface is trading-only (no shell/files),
+    and every order passes the code-enforced limits in trading_desk/limits.py.
+    """
+    desk_cfg = ctx.cfg.get("trading_desk", {})
+    if not desk_cfg.get("enabled"):
+        return
+    if ctx.client is None:
+        logger.warning("trading_desk_cycle: no ANTHROPIC_API_KEY configured — skipping.")
+        return
+
+    from assistant.trading_desk.desk import TradingDesk
+
+    summary = TradingDesk(ctx.repo_root, ctx.cfg, ctx.client).run_cycle()
+    logger.info("trading_desk_cycle: %s", summary)
+
+
 RoutineFn = Callable[[RoutineContext], None]
 
 ROUTINES: dict[str, RoutineFn] = {
@@ -227,4 +247,5 @@ ROUTINES: dict[str, RoutineFn] = {
     "signal_engine_check": signal_engine_check,
     "dev_agent_routine": dev_agent_routine,
     "overnight_summary": overnight_summary,
+    "trading_desk_cycle": trading_desk_cycle,
 }

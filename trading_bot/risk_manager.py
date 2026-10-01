@@ -15,7 +15,9 @@ class PositionSize:
 def round_to_step(value: float, step: float) -> float:
     if step <= 0:
         return value
-    return math.floor(value / step) * step
+    # The epsilon absorbs float noise: 20 / 200.00000000000003 = 0.0999999...
+    # must size to 0.10 lots, not floor down a whole step to 0.09.
+    return math.floor(value / step + 1e-9) * step
 
 
 def compute_position_size(

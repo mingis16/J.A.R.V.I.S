@@ -53,12 +53,42 @@ def new_trades_since(all_entries: list[dict[str, Any]], last_count: int) -> list
 
 
 def format_trade_message(entry: dict[str, Any]) -> str:
+    extra = entry.get("extra") or {}
+    if extra.get("source") == "alex_desk":
+        return format_desk_message(entry, extra)
     return (
         f"📈 {entry.get('symbol')} {entry.get('action')} ({entry.get('mode')})\n"
         f"lots={entry.get('lots')} price={entry.get('price')} "
         f"sl={entry.get('sl')} tp={entry.get('tp')}\n"
         f"reason: {entry.get('reason')}"
     )
+
+
+def format_desk_message(entry: dict[str, Any], extra: dict[str, Any]) -> str:
+    mode = "LIVE" if entry.get("mode") == "live" else "PAPER"
+    currency = extra.get("currency", "")
+    status = entry.get("status") or ""
+    failed = f"\n⚠️ broker said: {status}" if status.startswith("failed") else ""
+    action = entry.get("action")
+    if action in ("BUY", "SELL"):
+        return (
+            f"🤖 Alex {action} {entry.get('symbol')} [{mode}]\n"
+            f"entry {entry.get('price')} | SL {entry.get('sl')} | TP {entry.get('tp')}\n"
+            f"lots {entry.get('lots')} | risk {extra.get('risk_amount')} {currency} "
+            f"({extra.get('risk_pct')}%) | R:R {extra.get('reward_risk')}\n"
+            f"why: {entry.get('reason')}{failed}"
+        )
+    if action == "CLOSE":
+        return (
+            f"🤖 Alex closed #{entry.get('order_id')} {entry.get('symbol')} [{mode}] "
+            f"P/L {extra.get('profit')} {currency}\nwhy: {entry.get('reason')}{failed}"
+        )
+    if action == "MOVE_SL":
+        return (
+            f"🤖 Alex moved stop on #{entry.get('order_id')} {entry.get('symbol')} "
+            f"{extra.get('previous_sl')} → {entry.get('sl')}\nwhy: {entry.get('reason')}{failed}"
+        )
+    return f"🤖 Alex {action} {entry.get('symbol')} [{mode}]: {entry.get('reason')}{failed}"
 
 
 def format_signal_engine_message(signal: dict[str, Any]) -> str:

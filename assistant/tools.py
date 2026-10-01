@@ -317,6 +317,9 @@ def build_registry(repo_root: Path, cfg: dict, memory) -> ToolRegistry:
         )
     )
 
+    from assistant.trading_desk.control_tools import register_desk_tools
+
+    register_desk_tools(registry, repo_root, cfg)
     return registry
 
 

@@ -37,6 +37,18 @@ Fill in `.env`:
 - `MT5_TERMINAL_PATH` — only needed if the `MetaTrader5` Python package can't auto-locate your
   installed terminal.
 
+## Starting everything (and after a reboot)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\start_jarvis.ps1          # start whatever isn't running
+powershell -ExecutionPolicy Bypass -File scripts\start_jarvis.ps1 -Status  # what's running
+powershell -ExecutionPolicy Bypass -File scripts\start_jarvis.ps1 -Stop    # stop everything
+```
+
+Starts the trading bot, daemon, Telegram bot, dashboard, and voice assistant as hidden
+background processes, each appending to `logs\<name>_stdout.log`. Nothing restarts them on its
+own after a reboot or shutdown — run this again.
+
 ## Running the assistant
 
 ```bash
@@ -143,6 +155,39 @@ routine's Claude call (`dev_agent_routine`) thinks something should change, it c
 `propose_change`, which appends to `logs/proposals.jsonl` — nothing is applied automatically.
 Deterministic checks (health check, `git`/`pytest` calls) run fixed, hardcoded commands from our
 own code, never LLM-issued shell commands.
+
+**The one deliberate exception is the trading desk** (`trading_desk_cycle`, below): it may place
+and manage trades unattended, but only through trading tools — still no file writes or shell —
+and every order passes hard limits enforced in code.
+
+## Alex's trading desk (autonomous trading)
+
+The daemon runs `trading_desk_cycle` two minutes past each hour inside
+`trading_desk.session_hours_utc` (London open to NY afternoon by default). Code builds a compact
+market brief from MT5 (H4/H1/M15 trend, RSI, ATR, spreads, open positions, today's loss and trade
+counts, the user's goal, and Alex's own recent journal), and Alex decides whether to open, manage,
+or close positions with four tools: `get_candles`, `place_trade`, `close_position`,
+`move_stop_loss`. Every decision is journaled to `logs/trading_desk.jsonl` with its token use
+and estimated API cost; every trade (paper or live) goes to `state/trades.jsonl` and is pushed to
+Telegram with entry, stop-loss, take-profit, risk, and Alex's reasoning.
+
+**Hard limits, enforced in `assistant/trading_desk/limits.py`** (values in `trading_desk.limits`,
+chosen by the user — Alex can't change them): risk per trade (code sizes the lots; the model
+never picks a lot size), a daily loss stop measured on equity and persisted across restarts,
+max open positions (one per symbol), max new trades per day, a mandatory stop-loss and
+take-profit with a minimum reward:risk, stops at least the broker minimum and 3× the spread, and
+stops that may only be tightened, never widened.
+
+**Talk to it through Alex** (chat, voice, or Telegram): "set a trading goal of …"
+(`trading_desk_set_goal`), "how's the trading desk doing?" (`trading_desk_status`, including
+API spend so far), "pause/resume trading", and the emergency "close everything"
+(`trading_desk_close_all`, which also pauses the desk).
+
+**Real money needs both gates:** `trading_desk.live: true` in `config/config.yaml` **and**
+`JARVIS_CONFIRM_LIVE=YES_I_UNDERSTAND_THE_RISK` in `.env`. With either missing, trades are logged
+as paper only, sized from `trading_desk.paper_equity`. Symbols are configured as base names
+(`EURUSD`); the account's suffix (`EURUSDm` on Exness Standard, `EURUSDc` on Standard Cent) is
+found automatically.
 
 **Reviewing what happened overnight:** just ask Alex — by voice or `run_assistant.py` — "what
 came up overnight?" (uses the new `list_proposals` tool), or read `logs/daemon.log` directly. If

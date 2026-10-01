@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 
 from assistant.orchestrator import Orchestrator
 from assistant.voice.listener import Listener
@@ -15,11 +16,17 @@ def extract_command(transcript: str, wake_word: str) -> tuple[bool, str]:
 
     Pure/testable: no audio, no model calls.
     """
-    pattern = re.compile(rf"\b{re.escape(wake_word)}\b", re.IGNORECASE)
+    # Whisper punctuates freely ("Hey, Alex." / "Hey Alex!"), so let any run
+    # of spaces/punctuation stand in for the space between wake-word words.
+    words = [re.escape(w) for w in wake_word.split()]
+    pattern = re.compile(r"\b" + r"[\s,.!?;:-]+".join(words) + r"\b", re.IGNORECASE)
     match = pattern.search(transcript)
     if not match:
         return False, ""
-    remainder = transcript[match.end() :].strip(" ,.:;-")
+    remainder = transcript[match.end() :].strip(" ,.:;-!?\"'")
+    # Bare punctuation left over ("Hey Alex!" -> "!") isn't a command.
+    if not any(ch.isalnum() for ch in remainder):
+        remainder = ""
     return True, remainder
 
 
@@ -59,56 +66,71 @@ class VoiceAssistant:
 
         while True:
             try:
-                audio = self.listener.listen_for_utterance(timeout=None)
+                if self._handle_one_utterance() == "exit":
+                    return 0
             except KeyboardInterrupt:
                 print()
                 return 0
+            except Exception as exc:
+                # One bad utterance (mic hiccup, transcription error) must not
+                # end a session that's meant to run all day.
+                print(f"Voice loop error, continuing: {type(exc).__name__}: {exc}", file=sys.stderr)
+                time.sleep(1)
 
-            if audio is None:
-                continue
+    def _handle_one_utterance(self) -> str | None:
+        audio = self.listener.listen_for_utterance(timeout=None)
+        if audio is None:
+            return None
 
-            transcript = self.transcriber.transcribe(audio, self.listener.sample_rate)
-            if not transcript:
-                continue
-            print(f"[heard] {transcript}")
+        transcript = self.transcriber.transcribe(audio, self.listener.sample_rate)
+        if not transcript:
+            return None
+        print(f"[heard] {transcript}")
 
-            woke, remainder = extract_command(transcript, self.wake_word)
-            if not woke:
-                continue
+        woke, command = extract_command(transcript, self.wake_word)
+        if not woke:
+            return None
 
-            command = remainder
-            if not command:
-                self._say_and_print("Yes?")
-                try:
-                    audio = self.listener.listen_for_utterance(timeout=self.active_timeout_s)
-                except KeyboardInterrupt:
-                    print()
-                    return 0
-                if audio is None:
-                    self._say_and_print(f"Didn't catch that — say '{self.wake_word}' again when you're ready.")
-                    continue
-                command = self.transcriber.transcribe(audio, self.listener.sample_rate)
-                if not command:
-                    self._say_and_print(f"Didn't catch that — say '{self.wake_word}' again when you're ready.")
-                    continue
+        if not command:
+            self._say_and_print("Yes?")
+            audio = self.listener.listen_for_utterance(timeout=self.active_timeout_s)
+            follow_up = self.transcriber.transcribe(audio, self.listener.sample_rate) if audio is not None else ""
+            command = (follow_up or "").strip(" ,.:;-!?\"'")
+            if not any(ch.isalnum() for ch in command):
+                self._say_and_print(f"Didn't catch that — say '{self.wake_word}' again when you're ready.")
+                return None
 
-            print(f"you> {command}")
-            if command.strip().lower() in {"exit", "quit", "stop", "goodbye"}:
-                self._say_and_print("Goodbye.")
-                return 0
+        print(f"you> {command}")
+        if command.strip(" .!?").lower() in {"exit", "quit", "stop", "goodbye"}:
+            self._say_and_print("Goodbye.")
+            return "exit"
 
-            try:
-                reply = self.orchestrator.chat(command)
-            except Exception as exc:  # a single bad API call must not kill a long-running voice session
-                print(f"Error calling the assistant: {type(exc).__name__}: {exc}", file=sys.stderr)
+        try:
+            reply = self.orchestrator.chat(command)
+        except Exception as exc:  # a single bad API call must not kill a long-running voice session
+            print(f"Error calling the assistant: {type(exc).__name__}: {exc}", file=sys.stderr)
+            if "credit balance" in str(exc):
+                self._say_and_print(
+                    "My Anthropic API credit has run out, so I can hear you but can't think of a reply. "
+                    "Top it up in the Anthropic console under Plans and Billing."
+                )
+            else:
                 self._say_and_print("Sorry, I hit an error talking to my brain. Check the terminal for details.")
-                continue
-            self._say_and_print(reply)
+            return None
+        self._say_and_print(reply)
+        return None
 
 
 def main() -> int:
     from trading_bot.config import REPO_ROOT, load_env, load_yaml_config
     import os
+
+    # Whisper transcribes background audio in any script (it once heard a
+    # Chinese character), and printing that to a cp1252 console or redirected
+    # log raised UnicodeEncodeError and killed the whole session.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
     load_env()
     if not os.environ.get("ANTHROPIC_API_KEY"):

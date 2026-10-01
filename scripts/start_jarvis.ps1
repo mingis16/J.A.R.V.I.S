@@ -1,6 +1,6 @@
 <#
 Starts Alex's background services - trading bot, daemon, Telegram bot,
-dashboard - as hidden background processes, skipping any already running.
+dashboard, voice - as hidden background processes, skipping any already running.
 Output appends to logs\<name>_stdout.log. Safe to run repeatedly, e.g.
 after a reboot.
 
@@ -22,7 +22,9 @@ $Services = @(
     @{ Name = 'trading_bot'; Script = 'scripts\run_trading_bot.py';  Match = 'run_trading_bot\.py|trading_bot\.main' },
     @{ Name = 'daemon';      Script = 'scripts\run_daemon.py';       Match = 'run_daemon\.py' },
     @{ Name = 'telegram';    Script = 'scripts\run_telegram_bot.py'; Match = 'run_telegram_bot\.py' },
-    @{ Name = 'dashboard';   Script = 'scripts\run_dashboard.py';    Match = 'run_dashboard\.py' }
+    @{ Name = 'dashboard';   Script = 'scripts\run_dashboard.py';    Match = 'run_dashboard\.py' },
+    # Say "hey alex" to talk to it; replies are spoken aloud and transcripts land in logs\voice_stdout.log.
+    @{ Name = 'voice';       Script = 'scripts\run_voice_assistant.py'; Match = 'run_voice_assistant\.py' }
 )
 
 function Get-ServiceProcesses($svc) {

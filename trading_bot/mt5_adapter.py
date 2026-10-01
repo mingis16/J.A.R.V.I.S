@@ -38,20 +38,47 @@ class MT5Adapter:
         self._creds = creds
         self._connected = False
 
+    def _initialize(self, **kwargs: Any) -> bool:
+        if self._creds.terminal_path:
+            return mt5.initialize(self._creds.terminal_path, **kwargs)
+        return mt5.initialize(**kwargs)
+
     def connect(self) -> None:
-        kwargs: dict[str, Any] = dict(
+        # Attach without credentials first: if the terminal is already logged
+        # into this account (e.g. the trading bot and the daemon share it),
+        # passing credentials forces a re-login that intermittently fails with
+        # (-6, 'Terminal: Authorization failed') for whichever process lost
+        # the race. Only log in explicitly when the terminal isn't already on
+        # the right account.
+        if self._initialize():
+            account = mt5.account_info()
+            if account is not None and account.login == self._creds.login:
+                self._connected = True
+                logger.info("Connected to MT5 account %s on %s", self._creds.login, self._creds.server)
+                return
+            mt5.shutdown()
+
+        ok = self._initialize(
             login=self._creds.login,
             password=self._creds.password,
             server=self._creds.server,
         )
-        if self._creds.terminal_path:
-            ok = mt5.initialize(self._creds.terminal_path, **kwargs)
-        else:
-            ok = mt5.initialize(**kwargs)
         if not ok:
             raise RuntimeError(f"MT5 initialize() failed: {mt5.last_error()}")
         self._connected = True
         logger.info("Connected to MT5 account %s on %s", self._creds.login, self._creds.server)
+
+    def ensure_connected(self) -> None:
+        """Reconnects if the terminal link dropped (terminal closed/restarted,
+        'IPC send failed', lost broker connection). Without this, a long-running
+        poll loop fails every cycle forever after a single terminal hiccup."""
+        info = mt5.terminal_info()
+        if info is not None and info.connected:
+            return
+        logger.warning("MT5 terminal link lost (terminal_info=%s); reconnecting.", info)
+        mt5.shutdown()
+        self._connected = False
+        self.connect()
 
     def disconnect(self) -> None:
         if self._connected:

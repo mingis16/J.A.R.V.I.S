@@ -16,6 +16,7 @@ import anthropic
 
 from assistant.daemon.proposals import ProposalLog
 from assistant.daemon.restricted_tools import build_readonly_registry
+from trading_bot.pidfile import read_live_pid, read_pid
 from trading_bot.trade_log import TradeLog
 
 from signal_engine.config import SignalEngineConfig
@@ -62,7 +63,10 @@ def signal_engine_check(ctx: RoutineContext) -> None:
 
     for pair in se_cfg.pairs:
         try:
-            df = pull_history(pair, se_cfg.timeframe, se_cfg.history_bars, se_cfg.cache_dir)
+            # refresh=True: without it pull_history serves the cache written by
+            # the last --train run, and every "live" check re-scores that same
+            # frozen last bar instead of the market as it is now.
+            df = pull_history(pair, se_cfg.timeframe, se_cfg.history_bars, se_cfg.cache_dir, refresh=True)
             spread_price = _current_spread_price(pair)
             signal = latest_signal(df, se_cfg, pair, spread_price)
         except Exception:
@@ -84,7 +88,23 @@ def trading_bot_health_check(ctx: RoutineContext) -> None:
         logger.info("trading_bot_health_check: bot not running (no pid file) — nothing to check.")
         return
 
-    logger.info("trading_bot_health_check: running, %d recent trade log entries.", len(recent))
+    pid = read_pid(pid_path)
+    if read_live_pid(pid_path) is None:
+        # A PID file with no live process behind it means the bot died without
+        # a clean shutdown (crash, reboot, killed terminal) — the user expected
+        # it to be running, so surface it rather than silently reporting "running".
+        logger.warning("trading_bot_health_check: PID file named %s but that process is gone — bot died.", pid)
+        ctx.proposal_log.record(
+            routine="trading_bot_health_check",
+            title="Trading bot stopped unexpectedly",
+            description=f"state/trading_bot.pid named PID {pid}, but no such process is running. "
+            "It likely crashed or the machine rebooted. The stale PID file has been cleared.",
+            suggested_action="Check logs/trading_bot_stdout.log, then restart with scripts/start_jarvis.ps1 "
+            "or ask Alex to start the trading bot.",
+        )
+        return
+
+    logger.info("trading_bot_health_check: running (PID %s), %d recent trade log entries.", pid, len(recent))
     errors = [r for r in recent if r.get("status") not in (None, "filled", "simulated")]
     if errors:
         ctx.proposal_log.record(

@@ -176,6 +176,9 @@ def main() -> int:
     from trading_bot.config import REPO_ROOT, load_env, load_yaml_config
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # httpx logs every request URL at INFO, and Telegram Bot API URLs embed the
+    # bot token — so INFO here wrote the token to the log on every 25s poll.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     load_env()
     token = os.environ.get("TELEGRAM_BOT_TOKEN")

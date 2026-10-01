@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -134,27 +135,37 @@ def _audit(audit_path: Path, command: str, outcome: str, note: str) -> None:
 
 
 def _make_trading_tools(repo_root: Path, cfg: dict) -> tuple[Callable, Callable, Callable]:
+    from trading_bot.pidfile import read_live_pid, write_pid
     from trading_bot.trade_log import TradeLog
 
     pid_path = repo_root / "state" / "trading_bot.pid"
     trade_log = TradeLog(repo_root / cfg["assistant"]["trade_log_path"])
 
     def start(_: dict[str, Any]) -> str:
-        if pid_path.exists():
-            return "Trading bot appears to already be running (pid file exists). Use trading_bot_status first."
-        proc = subprocess.Popen(
-            ["python", "-m", "trading_bot.main"],
-            cwd=str(repo_root),
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP") else 0,
-        )
-        pid_path.parent.mkdir(parents=True, exist_ok=True)
-        pid_path.write_text(str(proc.pid), encoding="utf-8")
-        return f"Started trading bot loop as PID {proc.pid}."
+        pid = read_live_pid(pid_path)
+        if pid is not None:
+            return f"Trading bot is already running as PID {pid}. Use trading_bot_status first."
+        log_path = repo_root / "logs" / "trading_bot_stdout.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        # sys.executable, not "python": a bare "python" can resolve to a system
+        # interpreter without this project's deps (MetaTrader5, pandas).
+        with open(log_path, "a", encoding="utf-8") as log_file:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "trading_bot.main"],
+                cwd=str(repo_root),
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP") else 0,
+            )
+        # The bot overwrites this with its own PID once its loop starts; writing
+        # it now closes the window where a second start call could slip through.
+        write_pid(pid_path, proc.pid)
+        return f"Started trading bot loop as PID {proc.pid} (output in logs/trading_bot_stdout.log)."
 
     def stop(_: dict[str, Any]) -> str:
-        if not pid_path.exists():
-            return "No PID file found; trading bot doesn't appear to be running (via this control path)."
-        pid = int(pid_path.read_text(encoding="utf-8").strip())
+        pid = read_live_pid(pid_path)
+        if pid is None:
+            return "Trading bot isn't running (no live process behind the PID file)."
         try:
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True)
         finally:
@@ -162,7 +173,8 @@ def _make_trading_tools(repo_root: Path, cfg: dict) -> tuple[Callable, Callable,
         return f"Stopped trading bot PID {pid}."
 
     def status(_: dict[str, Any]) -> str:
-        running = "running (pid file present)" if pid_path.exists() else "not running (no pid file)"
+        pid = read_live_pid(pid_path)
+        running = f"running (PID {pid})" if pid is not None else "not running"
         recent = trade_log.tail(10)
         return json.dumps({"process": running, "recent_trades": recent}, indent=2, default=str)
 

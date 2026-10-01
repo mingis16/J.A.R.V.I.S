@@ -9,8 +9,11 @@ import time
 from trading_bot.config import REPO_ROOT, get_mt5_credentials, load_yaml_config
 from trading_bot.executor import Executor
 from trading_bot.mt5_adapter import MT5Adapter
+from trading_bot.pidfile import remove_pid_if_owned, write_pid
 from trading_bot.strategy import generate_signal
 from trading_bot.trade_log import TradeLog
+
+PID_PATH = REPO_ROOT / "state" / "trading_bot.pid"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,6 +82,7 @@ def main() -> int:
             return 0
 
         signal.signal(signal.SIGINT, _handle_sigint)
+        write_pid(PID_PATH)
         logger.info(
             "Starting poll loop for %s every %ss. Press Ctrl+C to stop.",
             trading_cfg["symbol"],
@@ -86,6 +90,7 @@ def main() -> int:
         )
         while not _shutdown_requested:
             try:
+                adapter.ensure_connected()
                 run_cycle(adapter, executor, trading_cfg)
             except Exception:
                 logger.exception("Cycle failed; will retry next interval.")
@@ -95,6 +100,7 @@ def main() -> int:
                 time.sleep(1)
         return 0
     finally:
+        remove_pid_if_owned(PID_PATH)
         adapter.disconnect()
 
 

@@ -51,3 +51,9 @@ def test_format_trade_message_includes_key_fields():
     assert "EURUSD" in msg
     assert "buy" in msg
     assert "bullish EMA cross" in msg
+
+
+def test_retry_delay_backs_off_and_caps():
+    from assistant.telegram.bot import retry_delay_seconds
+
+    assert [retry_delay_seconds(n) for n in range(1, 7)] == [5, 10, 20, 40, 60, 60]

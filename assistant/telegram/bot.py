@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from assistant.orchestrator import Orchestrator
 from assistant.telegram.client import TelegramClient
 from trading_bot.trade_log import TradeLog
@@ -37,6 +39,11 @@ def split_message(text: str, limit: int = MESSAGE_LIMIT) -> list[str]:
 
 def parse_allowed_ids(raw: str) -> set[int]:
     return {int(x) for x in raw.split(",") if x.strip()}
+
+
+def retry_delay_seconds(consecutive_failures: int, base: int = 5, cap: int = 60) -> int:
+    """5, 10, 20, 40, 60, 60, ... seconds."""
+    return min(base * 2 ** max(consecutive_failures - 1, 0), cap)
 
 
 def new_trades_since(all_entries: list[dict[str, Any]], last_count: int) -> list[dict[str, Any]]:
@@ -86,6 +93,12 @@ class TelegramBot:
     def _handle_sigint(self, signum, frame) -> None:
         self._shutdown = True
         logger.info("Shutdown requested, will stop after this poll.")
+
+    def _sleep(self, seconds: int) -> None:
+        for _ in range(seconds):
+            if self._shutdown:
+                return
+            time.sleep(1)
 
     def _send(self, chat_id: int, text: str) -> None:
         for chunk in split_message(text):
@@ -153,18 +166,34 @@ class TelegramBot:
                 "TELEGRAM_ALLOWED_USER_IDS is empty — running in discovery mode. "
                 "Message the bot to find your user ID."
             )
+        consecutive_failures = 0
         while not self._shutdown:
             try:
                 updates = self.client.get_updates(offset=self._offset, timeout=25)
+                if consecutive_failures:
+                    logger.info("Telegram reachable again after %d failed polls.", consecutive_failures)
+                consecutive_failures = 0
                 for update in updates.get("result", []):
                     self._offset = update["update_id"] + 1
                     try:
                         self._handle_update(update)
                     except Exception:
                         logger.exception("Failed handling update %s", update.get("update_id"))
+            except httpx.TransportError as exc:
+                # Network-level failure (DNS, timeout, blocked connection): back
+                # off and log one line, not a full traceback every 5s — an
+                # outage of a few hours otherwise grows the log by megabytes.
+                consecutive_failures += 1
+                delay = retry_delay_seconds(consecutive_failures)
+                logger.warning(
+                    "Telegram unreachable (%s: %s); retry %d in %ss.",
+                    type(exc).__name__, exc, consecutive_failures, delay,
+                )
+                self._sleep(delay)
             except Exception:
+                consecutive_failures += 1
                 logger.exception("Telegram poll failed; retrying shortly.")
-                time.sleep(5)
+                self._sleep(retry_delay_seconds(consecutive_failures))
             self._check_new_trades()
             self._check_new_signal_engine_hits()
         logger.info("Telegram bot stopped.")

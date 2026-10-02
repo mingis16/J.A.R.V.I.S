@@ -134,6 +134,7 @@ class FakeAccount:
     margin_free: float = 1000.0
     currency: str = "USD"
     trade_allowed: bool = True
+    margin_level: float = 0.0
 
 
 @dataclass
@@ -165,9 +166,10 @@ class FakeOrderResult:
 
 
 class FakeAdapter:
-    def __init__(self, tick_time: int | None = None, account: FakeAccount | None = None):
+    def __init__(self, tick_time: int | None = None, account: FakeAccount | None = None, closed=None):
         self.tick_time = tick_time if tick_time is not None else int(NOW.timestamp())
         self.account = account or FakeAccount()
+        self.closed = closed or []
         self.orders: list[dict] = []
         self.connected = False
 
@@ -198,8 +200,13 @@ class FakeAdapter:
                 "high": close + 0.0005,
                 "low": close - 0.0005,
                 "close": close,
+                "tick_volume": np.full(count, 100),
+                "spread": np.full(count, 10),
             }
         )
+
+    def closed_results(self, date_from, date_to, magic):
+        return list(self.closed)
 
     def get_open_positions(self, symbol=None):
         return []
@@ -412,11 +419,11 @@ CHECK = {k: v for k, v in BUY.items() if k != "reasoning"}
 def _role(call: dict) -> str:
     system = call["system"]
     for marker, role in (
-        ("Quantitative Research team", "quant"),
-        ("Analyst team", "analyst"),
-        ("Market Strategy team", "strategist"),
-        ("Operational Risk team", "risk"),
-        ("CEO of a small trading firm", "ceo"),
+        ("You are the Director of Intelligence", "intelligence"),
+        ("You are the Analyst team", "analyst"),
+        ("You are the Market Strategy team", "strategist"),
+        ("You are department 9, Risk Intelligence", "risk"),
+        ("You are Alex, CEO", "ceo"),
     ):
         if marker in system:
             return role
@@ -439,7 +446,7 @@ def test_firm_full_chain_reports_up_and_only_ceo_trades(tmp_path):
             FakeResponse([FakeText("EURUSD long: STRONG, levels verified.\nVETTED: 1")], "end_turn"),
             FakeResponse([FakeText("Plan: buy EURUSD at market, SL 1.09810, TP 1.10410.")], "end_turn"),
             FakeResponse([FakeToolUse("r1", "check_trade", CHECK)], "tool_use"),
-            FakeResponse([FakeText("APPROVE: risk within limits.")], "end_turn"),
+            FakeResponse([FakeText("Within limits.\nVERDICT: EURUSDm buy APPROVE 12")], "end_turn"),
             FakeResponse([FakeToolUse("c1", "place_trade", BUY)], "tool_use"),
             FakeResponse([FakeText("Bought EURUSD per the teams' plan.")], "end_turn"),
         ],
@@ -449,7 +456,7 @@ def test_firm_full_chain_reports_up_and_only_ceo_trades(tmp_path):
     summary = desk.run_cycle(NOW)
 
     calls = client.beta.messages.calls
-    assert [_role(c) for c in calls] == ["quant", "analyst", "strategist", "risk", "risk", "ceo", "ceo"]
+    assert [_role(c) for c in calls] == ["intelligence", "analyst", "strategist", "risk", "risk", "ceo", "ceo"]
     # Division of labour is enforced by tool access: only the CEO can trade.
     for call in calls:
         trading = _tool_names(call) & {"place_trade", "close_position", "move_stop_loss"}
@@ -460,15 +467,15 @@ def test_firm_full_chain_reports_up_and_only_ceo_trades(tmp_path):
     assert "STRONG, levels verified" in calls[2]["messages"][0]["content"]
     assert "Plan: buy EURUSD" in calls[3]["messages"][0]["content"]
     ceo_input = calls[5]["messages"][0]["content"]
-    assert all(s in ceo_input for s in ("CANDIDATES: 1", "VETTED: 1", "Plan: buy", "APPROVE"))
+    assert all(s in ceo_input for s in ("CANDIDATES: 1", "VETTED: 1", "Plan: buy", "VERDICT: EURUSDm buy APPROVE"))
     # Risk's dry run used the real sizing code and placed nothing.
     assert "WOULD BE ACCEPTED: BUY 0.1 EURUSDm" in calls[4]["messages"][-1]["content"][0]["content"]
 
     assert summary == "Bought EURUSD per the teams' plan."
     assert len(TradeLog(tmp_path / "state" / "trades.jsonl").tail()) == 1
     entry = _journal(tmp_path)
-    assert set(entry["reports"]) == {"quant", "analyst", "strategist", "risk"}
-    assert set(entry["cost_by_role"]) == {"quant", "analyst", "strategist", "risk", "ceo"}
+    assert set(entry["reports"]) == {"intelligence", "analyst", "strategist", "risk"}
+    assert set(entry["cost_by_role"]) == {"intelligence", "analyst", "strategist", "risk", "ceo"}
     assert entry["est_cost_usd"] > 0
 
 
@@ -484,7 +491,7 @@ def test_firm_quiet_hour_skips_middle_teams(tmp_path):
 
     desk.run_cycle(NOW)
 
-    assert [_role(c) for c in client.beta.messages.calls] == ["quant", "ceo"]
+    assert [_role(c) for c in client.beta.messages.calls] == ["intelligence", "ceo"]
     reports = _journal(tmp_path)["reports"]
     assert reports["analyst"].startswith("(skipped") and reports["risk"].startswith("(skipped")
 
@@ -495,7 +502,7 @@ def test_ceo_can_send_a_team_back(tmp_path):
         [
             FakeResponse([FakeText("Nothing.\nCANDIDATES: 0")], "end_turn"),
             FakeResponse(
-                [FakeToolUse("f1", "request_followup", {"team": "quant", "instructions": "Recheck USDJPY H4 swing low."})],
+                [FakeToolUse("f1", "request_followup", {"team": "intelligence", "instructions": "Recheck USDJPY H4 swing low."})],
                 "tool_use",
             ),
             FakeResponse([FakeText("Rechecked USDJPY: still no setup.\nCANDIDATES: 0")], "end_turn"),
@@ -507,10 +514,10 @@ def test_ceo_can_send_a_team_back(tmp_path):
     desk.run_cycle(NOW)
 
     calls = client.beta.messages.calls
-    assert [_role(c) for c in calls] == ["quant", "ceo", "quant", "ceo"]
+    assert [_role(c) for c in calls] == ["intelligence", "ceo", "intelligence", "ceo"]
     assert "Recheck USDJPY H4 swing low." in calls[2]["messages"][0]["content"]
-    assert "Revised Quant Research report" in calls[3]["messages"][-1]["content"][0]["content"]
-    assert _journal(tmp_path)["followups"] == [{"team": "quant", "instructions": "Recheck USDJPY H4 swing low."}]
+    assert "Revised Intelligence Departments report" in calls[3]["messages"][-1]["content"][0]["content"]
+    assert _journal(tmp_path)["followups"] == [{"team": "intelligence", "instructions": "Recheck USDJPY H4 swing low."}]
 
 
 def test_followups_are_capped_per_cycle(tmp_path):
@@ -520,7 +527,7 @@ def test_followups_are_capped_per_cycle(tmp_path):
             FakeResponse([FakeText("CANDIDATES: 0")], "end_turn"),
             FakeResponse(
                 [
-                    FakeToolUse("f1", "request_followup", {"team": "quant", "instructions": "again"}),
+                    FakeToolUse("f1", "request_followup", {"team": "intelligence", "instructions": "again"}),
                     FakeToolUse("f2", "request_followup", {"team": "analyst", "instructions": "run anyway"}),
                 ],
                 "tool_use",
@@ -534,7 +541,7 @@ def test_followups_are_capped_per_cycle(tmp_path):
     desk.run_cycle(NOW)
 
     results = client.beta.messages.calls[-1]["messages"][-1]["content"]
-    assert "Revised Quant Research report" in results[0]["content"]
+    assert "Revised Intelligence Departments report" in results[0]["content"]
     assert results[1]["content"].startswith("Error: follow-up limit reached")
 
 
@@ -550,3 +557,163 @@ def test_only_one_decision_per_hour(tmp_path):
     desk.run_cycle(NOW)  # 12:02
     assert "already decided this hour" in desk.run_cycle(NOW.replace(minute=50))
     assert len(client.beta.messages.calls) == 1
+
+
+# ----- nine departments: Risk Intelligence gate, intel, briefing -----------
+
+from assistant.trading_desk.briefing import DailyBriefing  # noqa: E402
+from assistant.trading_desk.firm import department_findings, parse_verdicts  # noqa: E402
+from assistant.trading_desk.intel import barrier_outcomes, base_rates  # noqa: E402
+from assistant.trading_desk.limits import currency_concentration, losing_streak, pre_cycle_directive  # noqa: E402
+
+
+def _directive(**overrides):
+    kwargs = dict(
+        limits=LIMITS, peak_equity=100.0, equity=100.0, closed_results_today=[],
+        margin_level_pct=0.0, has_positions=False, drawdown_halted=False,
+    )
+    kwargs.update(overrides)
+    return pre_cycle_directive(**kwargs)
+
+
+def test_risk_gate_normal_by_default():
+    d = _directive()
+    assert d.state == "NORMAL" and d.max_risk_pct == LIMITS.risk_per_trade_pct
+
+
+def test_risk_gate_halts_on_peak_drawdown_and_stays_halted():
+    assert _directive(equity=69.0).state == "HALT_NEW"          # 31% below peak
+    assert _directive(equity=95.0, drawdown_halted=True).state == "HALT_NEW"  # until re-armed
+
+
+def test_risk_gate_losing_streak_reduces_then_halts():
+    reduced = _directive(closed_results_today=[5.0, -1.0, -1.0, -1.0])
+    assert reduced.state == "REDUCED" and reduced.max_risk_pct == LIMITS.risk_per_trade_pct / 2
+    assert _directive(closed_results_today=[-1.0] * 5).state == "HALT_NEW"
+    assert losing_streak([-1.0, -1.0, 2.0]) == 0
+
+
+def test_risk_gate_low_margin_level_blocks_new_trades():
+    assert _directive(margin_level_pct=300.0, has_positions=True).state == "HALT_NEW"
+    assert _directive(margin_level_pct=300.0, has_positions=False).state == "NORMAL"
+
+
+def test_currency_concentration_blocks_the_same_bet_twice():
+    assert currency_concentration("GBPUSDm", True, [("EURUSDm", True)]) is not None   # short USD x2
+    assert currency_concentration("XAUUSDm", True, [("EURUSDm", True)]) is not None   # short USD x2
+    assert currency_concentration("USDJPYm", False, [("EURUSDm", True)]) is not None  # short USD x2
+    assert currency_concentration("GBPUSDm", False, [("EURUSDm", True)]) is None      # EUR vs GBP spread
+    assert currency_concentration("EURUSDm", True, []) is None
+
+
+def test_parse_verdicts_and_department_findings():
+    verdicts = parse_verdicts("blah\n**VERDICT:** EURUSDm buy APPROVE 8\nVERDICT: gbpusd sell REJECT\nVERDICT: NONE")
+    assert verdicts == {("EURUSD", "buy"): ("APPROVE", 8.0), ("GBPUSD", "sell"): ("REJECT", None)}
+    findings = department_findings("DEPARTMENT FINDINGS\n1. Macroeconomic: Fed on hold.\n**7. Order flow:** balanced\nCANDIDATES: 0")
+    assert findings == ["1. Macroeconomic: Fed on hold.", "7. Order flow: balanced"]
+
+
+def test_quant_base_rates_reflect_trend():
+    n = 3000
+    close = 1.0 + np.cumsum(np.full(n, 0.0002))  # steady uptrend
+    df = pd.DataFrame({
+        "time": pd.date_range("2020-01-01", periods=n, freq="h"),
+        "open": close - 0.0001, "high": close + 0.0003, "low": close - 0.0003, "close": close,
+    })
+    long_win, short_win = barrier_outcomes(df)
+    assert long_win[:-30].mean() > 0.9 and short_win[:-30].mean() < 0.05
+    rates = base_rates(df)
+    assert rates["current_state"] == "up" and rates["up"]["long_first"] > 0.9
+
+
+def _firm_ceo_places(tmp_path, risk_text):
+    return _desk(
+        tmp_path,
+        [
+            FakeResponse([FakeText("CANDIDATES: 1")], "end_turn"),
+            FakeResponse([FakeText("VETTED: 1")], "end_turn"),
+            FakeResponse([FakeText("Plan: buy EURUSD.")], "end_turn"),
+            FakeResponse([FakeText(risk_text)], "end_turn"),
+            FakeResponse([FakeToolUse("c1", "place_trade", BUY)], "tool_use"),
+            FakeResponse([FakeText("CONSENSUS VERDICT: no trade.")], "end_turn"),
+        ],
+        firm=FIRM_ON,
+    )
+
+
+def test_ceo_cannot_trade_without_risk_approval(tmp_path):
+    desk, client = _firm_ceo_places(tmp_path, "Too risky.\nVERDICT: EURUSDm buy REJECT")
+    desk.run_cycle(NOW)
+    result = client.beta.messages.calls[-1]["messages"][-1]["content"][0]["content"]
+    assert result.startswith("REJECTED: Risk Intelligence has not approved buy EURUSDm")
+    assert TradeLog(tmp_path / "state" / "trades.jsonl").tail() == []
+
+
+def test_ceo_cannot_exceed_risk_approved_size(tmp_path):
+    desk, client = _firm_ceo_places(tmp_path, "OK at lower size.\nVERDICT: EURUSDm buy APPROVE 1")
+    desk.run_cycle(NOW)  # CEO's place_trade defaults to the full 2% limit
+    result = client.beta.messages.calls[-1]["messages"][-1]["content"][0]["content"]
+    assert "approved at most 1% risk" in result
+
+
+def test_trade_message_carries_department_findings(tmp_path):
+    desk, _ = _firm_ceo_places(tmp_path, "VERDICT: EURUSDm buy APPROVE 12")
+    desk.run_cycle(NOW)
+    # The intelligence report had no numbered findings here; the record still carries the field.
+    [trade] = TradeLog(tmp_path / "state" / "trades.jsonl").tail()
+    assert trade["extra"]["departments"] == []
+    msg = format_trade_message({**trade, "extra": {**trade["extra"], "departments": ["5. Technical: aligned up"]}})
+    assert "Departments:" in msg and "5. Technical: aligned up" in msg
+
+
+def test_wide_spread_blocks_new_entries(tmp_path):
+    desk, client = _desk(
+        tmp_path,
+        [FakeResponse([FakeToolUse("t1", "place_trade", BUY)], "tool_use"), FakeResponse([FakeText("ok")], "end_turn")],
+    )
+    real = desk.adapter.get_rates
+
+    def thin_history(symbol, timeframe, count):
+        df = real(symbol, timeframe, count)
+        if timeframe == "M15":
+            df["spread"] = 2  # typical 2 points; live spread is 10 -> 5x
+        return df
+
+    desk.adapter.get_rates = thin_history
+    desk.run_cycle(NOW)
+    result = client.beta.messages.calls[-1]["messages"][-1]["content"][0]["content"]
+    assert "spread is 5.0x normal" in result
+
+
+def test_live_drawdown_halt_skips_cycle_without_llm(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARVIS_CONFIRM_LIVE", "YES_I_UNDERSTAND_THE_RISK")
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "state" / "trading_desk_risk.json").write_text(json.dumps({"peak_equity": 2000.0}))
+    desk, client = _desk(tmp_path, [], live=True)  # equity 1000 vs peak 2000 = 50% drawdown
+    assert "Risk Intelligence halt" in desk.run_cycle(NOW)
+    assert client.beta.messages.calls == []
+    assert json.loads((tmp_path / "state" / "trading_desk_risk.json").read_text())["drawdown_halted"] is True
+
+
+def test_daily_briefing_falls_back_without_web_and_caches(tmp_path):
+    class Messages:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs.get("tools"):
+                raise RuntimeError("web search not enabled for this organization")
+            return FakeResponse([FakeText("1. MACROECONOMIC: prices only")], "end_turn")
+
+    client = type("C", (), {})()
+    client.beta = type("B", (), {})()
+    client.beta.messages = Messages()
+    cfg = {"model": "claude-opus-5-5", "briefing": {"enabled": True}}
+    briefing = DailyBriefing(tmp_path, cfg, client)
+
+    text, cost = briefing.get(NOW, "snapshot")
+    assert "PRICES ONLY" in text and cost > 0
+    assert len(client.beta.messages.calls) == 2  # web attempt, then fallback
+    text2, cost2 = briefing.get(NOW.replace(hour=15), "snapshot")
+    assert cost2 == 0 and len(client.beta.messages.calls) == 2  # cached for the day

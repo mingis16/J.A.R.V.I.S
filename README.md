@@ -171,30 +171,47 @@ or close positions with four tools: `get_candles`, `place_trade`, `close_positio
 and estimated API cost; every trade (paper or live) goes to `state/trades.jsonl` and is pushed to
 Telegram with entry, stop-loss, take-profit, risk, and Alex's reasoning.
 
-**Run as a firm, with Alex as CEO** (`trading_desk.firm`, in `assistant/trading_desk/firm.py`).
-Each cycle the work goes up a chain, and each team sees the report before it:
+**Nine intelligence departments, with Alex as CEO** (`trading_desk.firm`, `assistant/trading_desk/`).
+Each department gets real data — computed by code wherever the job is arithmetic, so it can't be
+invented — and each costs only what its data's pace requires:
 
-| Team | Job | Tools |
-|---|---|---|
-| Quant Research | Reads the raw data and multi-year context; lists candidate setups with evidence | `get_candles` |
-| Analysts | Check the quants' work against the data, correct it, grade each setup STRONG / WEAK / REJECT | `get_candles` |
-| Market Strategy | Turns vetted setups into a concrete plan (entry, stop, target), weighing correlation, session, spread, goal | — |
-| Operational Risk | Dry-runs every proposed trade through the real limit and sizing code (`check_trade`); approves, amends, or rejects in money | `check_trade` |
-| **Alex (CEO)** | Reads all four reports, can send any team back with instructions (`request_followup`, capped per cycle), and makes the final decision | the trading tools |
+| # | Department | Input | Runs |
+|---|---|---|---|
+| 1 | Macroeconomic | Daily web-search briefing: central-bank decisions, data surprises (`briefing.py`) | once per UTC day, cached |
+| 2 | Geopolitical | Same briefing: conflicts, sanctions, trade policy | once per day |
+| 3 | Fundamental | Same briefing: rate differentials, real yields | once per day |
+| 4 | Quantitative | Code: base rates from ~8 years of H1 history — how often price reached +1 ATR before −1 ATR within 24h in the current trend state, vs the spread-adjusted break-even (`intel.py`) | hourly, computed once a day |
+| 5 | Technical | Code: H4/H1/M15 trend, RSI, ATR, 24h and multi-year ranges | hourly |
+| 6 | Sentiment | Code: cross-asset risk-on/off (US500, Nasdaq, DAX, DXY, oil, BTC, USDJPY, gold) + CFTC positioning from the briefing | hourly / daily |
+| 7 | Order flow | Code **proxy**: up- vs down-bar tick volume, close location, activity vs normal. This broker has no order book or real volume — the reports say so | hourly |
+| 8 | Liquidity | Code: spread vs normal for this hour, tick activity | hourly |
+| 9 | Risk | **Code gate** (below) + the Risk Intelligence team, whose APPROVE every trade needs | every cycle |
 
-Only the CEO's tool set can place, close, or adjust trades — the division of labour is enforced
-by tool access, not just by prompts. When the quants find nothing (or the analysts reject
-everything) and no position is open, the middle of the chain is skipped to save API credit; the
-CEO still reviews the quants' work. Each team's report, any follow-ups, and the cost per role are
-journaled; ask Alex "what did the teams say?" to see the last cycle's reports.
+Each hour the work goes up a chain, each team seeing the report before it:
+**Director of Intelligence** (writes departments 1–8's findings and candidate setups) →
+**Analysts** (check it, grade setups) → **Market Strategy** (concrete plan) → **Risk
+Intelligence** (dry-runs each trade through the real limit/sizing code with `check_trade`, ends with
+`VERDICT: <symbol> <buy|sell> APPROVE <max risk%> | REJECT`) → **Alex (CEO)**, who can send any
+team back (`request_followup`, capped per cycle) and ends with a **consensus verdict** (entry,
+stop, target, risk — or no trade). Only the CEO's tools can trade, and `place_trade` refuses any
+trade Risk Intelligence didn't approve this cycle or above the risk it approved — enforced in
+code. Telegram trade alerts carry the department findings. When nothing qualifies and no position
+is open, the middle of the chain is skipped to save API credit. Reports, follow-ups, the risk gate,
+and cost per role are journaled; ask Alex "what did the departments say?".
 `trading_desk.firm.models` can put teams on a cheaper model; `enabled: false` makes Alex decide alone.
 
-**Hard limits, enforced in `assistant/trading_desk/limits.py`** (values in `trading_desk.limits`,
-chosen by the user — Alex can't change them): risk per trade (code sizes the lots; the model
-never picks a lot size), a daily loss stop measured on equity and persisted across restarts,
-max open positions (one per symbol), max new trades per day, a mandatory stop-loss and
-take-profit with a minimum reward:risk, stops at least the broker minimum and 3× the spread, and
-stops that may only be tightened, never widened.
+**Risk Intelligence code gate and hard limits** (`assistant/trading_desk/limits.py`, values in
+`trading_desk.limits`, chosen by the user — Alex can't change them). Evaluated before any LLM is
+paid for, most restrictive rule wins, and it can only ever restrict:
+risk per trade (code sizes the lots; the model never picks a lot size); daily loss stop on
+equity, persisted across restarts; **peak-drawdown halt** (stays halted until you say
+"resume"); **losing streak** (3 in a row today halves risk, 5 halts the day); max open positions,
+one per symbol, and **no doubling one currency's exposure** (long EURUSD + long GBPUSD is one
+bet taken twice); max trades per day; **no new entries** when the spread is over its multiple of
+normal, prices are stale, margin level is low, or after the Friday cutoff; mandatory stop-loss
+and take-profit with a minimum reward:risk; stops at least the broker minimum and 3× the spread;
+stops may only be tightened, never widened. Precedence: you (pause / close-all / re-arm) > code
+gate > Risk Intelligence's verdicts > Alex > departments.
 
 **Talk to it through Alex** (chat, voice, or Telegram): "set a trading goal of …"
 (`trading_desk_set_goal`), "how's the trading desk doing?" (`trading_desk_status`, including

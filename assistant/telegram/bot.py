@@ -71,12 +71,14 @@ def format_desk_message(entry: dict[str, Any], extra: dict[str, Any]) -> str:
     failed = f"\n⚠️ broker said: {status}" if status.startswith("failed") else ""
     action = entry.get("action")
     if action in ("BUY", "SELL"):
+        departments = extra.get("departments") or []
+        findings = ("\n\n🏛 Departments:\n" + "\n".join(departments)) if departments else ""
         return (
             f"🤖 Alex {action} {entry.get('symbol')} [{mode}]\n"
             f"entry {entry.get('price')} | SL {entry.get('sl')} | TP {entry.get('tp')}\n"
             f"lots {entry.get('lots')} | risk {extra.get('risk_amount')} {currency} "
             f"({extra.get('risk_pct')}%) | R:R {extra.get('reward_risk')}\n"
-            f"why: {entry.get('reason')}{failed}"
+            f"why: {entry.get('reason')}{failed}{findings}"
         )
     if action == "CLOSE":
         return (

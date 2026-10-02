@@ -138,6 +138,16 @@ class MT5Adapter:
         mt5.symbol_select(name, True)
         return name
 
+    def closed_results(self, date_from: datetime, date_to: datetime, magic: int) -> list[float]:
+        """Net result (profit + swap + commission) of each position closed in the
+        window by `magic`, oldest first — feeds the losing-streak risk rule."""
+        deals = mt5.history_deals_get(date_from, date_to) or ()
+        closing = sorted(
+            (d for d in deals if d.magic == magic and d.entry == mt5.DEAL_ENTRY_OUT),
+            key=lambda d: d.time,
+        )
+        return [float(d.profit + d.swap + d.commission) for d in closing]
+
     def calc_margin(self, symbol: str, is_buy: bool, volume: float, price: float) -> float:
         order_type = mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL
         margin = mt5.order_calc_margin(order_type, symbol, volume, price)

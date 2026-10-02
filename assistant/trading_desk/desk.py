@@ -20,20 +20,32 @@ import json
 import logging
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from assistant.tools import Tool, ToolRegistry
+from assistant.trading_desk.intel import (
+    RISK_ON_SIGN,
+    QuantBaseRates,
+    cross_asset_sentiment,
+    describe_base_rates,
+    microstructure,
+)
 from assistant.trading_desk.limits import (
+    HALT_NEW,
+    NORMAL,
     DeskLimits,
     Quote,
+    RiskDirective,
     check_new_trade,
     check_stop_move,
+    currency_concentration,
     daily_loss_pct,
     min_stop_distance,
+    pre_cycle_directive,
 )
 from assistant.trading_desk.state import DeskStateStore, roll_day
 from trading_bot.config import live_trading_confirmed
@@ -219,8 +231,19 @@ class TradingDesk:
             adapter = MT5Adapter(get_mt5_credentials())
         self.adapter = adapter
         self.magic = int(self.desk_cfg["magic_number"])
+        self.repo_root = repo_root
         self.symbols: dict[str, str] = {}  # base -> broker name
         self._day = None
+        self._now: datetime | None = None
+        self._directive = RiskDirective(state=NORMAL, max_risk_pct=self.limits.risk_per_trade_pct)
+        self._spread_ratio: dict[str, float] = {}
+        self.base_rates = QuantBaseRates(repo_root / "state" / "quant_base_rates.json")
+        self.risk_state_path = repo_root / "state" / "trading_desk_risk.json"
+        # Set by the firm for the CEO's turn: Risk Intelligence must have approved
+        # a trade before place_trade accepts it, and department findings ride
+        # along on the trade record to Telegram.
+        self.trade_guard: Any = None
+        self.trade_context: dict[str, Any] | None = None
 
     # ----- mode / account -------------------------------------------------
 
@@ -296,22 +319,41 @@ class TradingDesk:
         if loss >= self.limits.max_daily_loss_pct and not positions:
             return f"daily loss stop hit ({loss:.2f}%) and nothing open to manage — skipped"
 
-        brief = self.build_brief(now, account, day, loss, positions, ticks)
+        # Risk Intelligence, code gate: decided before any LLM is paid for, and
+        # only ever restricts what the departments, teams, and CEO may do.
+        self._now = now
+        self._directive = self._risk_directive(now, account, positions, live)
+        if self._directive.state == HALT_NEW and not positions:
+            return f"Risk Intelligence halt: {self._directive.describe()} — skipped"
+
+        cross = {b.upper(): n for b in self.desk_cfg.get("cross_assets", []) if (n := self.adapter.resolve_symbol(b))}
+        cross.update({b: n for b, n in self.symbols.items() if b in RISK_ON_SIGN})
+        sentiment = cross_asset_sentiment(self.adapter, cross)
+
+        from assistant.trading_desk.briefing import DailyBriefing
+
+        briefing, briefing_cost = DailyBriefing(self.repo_root, self.desk_cfg, self.client).get(now, sentiment)
+        brief = self.build_brief(now, account, day, loss, positions, ticks, briefing=briefing, sentiment=sentiment)
         day.cycles_today += 1
         self.store.save_day(day)
 
-        entry: dict[str, Any] = {"ts": now.isoformat(), "mode": "live" if live else "paper"}
+        entry: dict[str, Any] = {
+            "ts": now.isoformat(),
+            "mode": "live" if live else "paper",
+            "risk_gate": self._directive.describe(),
+        }
         if self.desk_cfg.get("firm", {}).get("enabled"):
             from assistant.trading_desk.firm import Firm
 
             result = Firm(self).run(brief, has_positions=bool(positions))
+            cost_by_role = {**({"briefing": briefing_cost} if briefing_cost else {}), **result.cost_by_role}
             entry.update(
                 summary=result.summary,
                 actions=result.actions,
                 reports=result.reports,
                 followups=result.followups,
-                cost_by_role=result.cost_by_role,
-                est_cost_usd=round(sum(result.cost_by_role.values()), 4),
+                cost_by_role=cost_by_role,
+                est_cost_usd=round(sum(cost_by_role.values()), 4),
             )
         else:
             result = self.run_agent(SYSTEM_PROMPT, brief, self.build_registry(TRADE_TOOLS), MAX_REQUESTS_PER_CYCLE)
@@ -319,12 +361,60 @@ class TradingDesk:
                 summary=result.text,
                 actions=result.actions,
                 usage=result.usage,
-                est_cost_usd=estimate_cost(result.usage, self.desk_cfg["model"]),
+                est_cost_usd=round(estimate_cost(result.usage, self.desk_cfg["model"]) + briefing_cost, 4),
             )
         self.journal.record(entry)
         return entry["summary"]
 
-    def build_brief(self, now: datetime, account: Any, day: Any, loss: float, positions: list[Any], ticks: dict) -> str:
+    def _risk_directive(self, now: datetime, account: Any, positions: list[Any], live: bool) -> RiskDirective:
+        """Loads/updates the persisted peak equity and drawdown halt, reads
+        today's closed results from the broker, and applies the account rules."""
+        if not live:
+            return RiskDirective(state=NORMAL, max_risk_pct=self.limits.risk_per_trade_pct)
+        state = self._load_risk_state()
+        equity = float(account.equity)
+        state["peak_equity"] = max(float(state.get("peak_equity") or 0.0), equity)
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        try:
+            closed = self.adapter.closed_results(day_start - timedelta(hours=3), now + timedelta(hours=3), self.magic)
+        except Exception:
+            closed = []
+        directive = pre_cycle_directive(
+            limits=self.limits,
+            peak_equity=state["peak_equity"],
+            equity=equity,
+            closed_results_today=closed,
+            margin_level_pct=float(getattr(account, "margin_level", 0.0) or 0.0),
+            has_positions=bool(positions),
+            drawdown_halted=bool(state.get("drawdown_halted")),
+        )
+        if any(r.startswith("peak drawdown") for r in directive.reasons) and not state.get("drawdown_halted"):
+            state["drawdown_halted"] = True
+            state["halted_at"] = now.isoformat()
+        self._save_risk_state(state)
+        return directive
+
+    def _load_risk_state(self) -> dict[str, Any]:
+        try:
+            return json.loads(self.risk_state_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def _save_risk_state(self, state: dict[str, Any]) -> None:
+        self.risk_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.risk_state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    def build_brief(
+        self,
+        now: datetime,
+        account: Any,
+        day: Any,
+        loss: float,
+        positions: list[Any],
+        ticks: dict,
+        briefing: str = "(none)",
+        sentiment: str = "(none)",
+    ) -> str:
         live = self.is_live()
         currency = account.currency
         sizing_equity = self._sizing_equity(account)
@@ -340,6 +430,7 @@ class TradingDesk:
             f"trades placed {day.trades_today}/{self.limits.max_trades_per_day}, "
             f"open positions {len(positions)}/{self.limits.max_open_positions}",
             f"Hard limits (enforced in code): {self.limits.describe()}.",
+            f"Risk Intelligence code gate this cycle: {self._directive.describe()}",
             "",
             "Open desk positions:" if positions else "Open desk positions: none",
         ]
@@ -353,7 +444,17 @@ class TradingDesk:
                 f"P/L {money(p.profit, currency)}"
             )
 
-        lines += ["", "Markets (EMA20/EMA50 trend, RSI14, ATR14):"]
+        lines += [
+            "",
+            "Daily briefing — departments 1 Macro, 2 Geopolitical, 3 Fundamental, 6 Positioning:",
+            briefing,
+            "",
+            "Department 6 Sentiment — cross-asset risk appetite (code):",
+            sentiment,
+            "",
+            "Markets — 5 Technical (EMA20/EMA50 trend, RSI14, ATR14), 4 Quant base rates, "
+            "7 Order flow proxy, 8 Liquidity:",
+        ]
         for base, name in self.symbols.items():
             info = self.adapter.get_symbol_info(name)
             tick = ticks[name]
@@ -363,7 +464,7 @@ class TradingDesk:
                 lines.append(f"  {name}: no fresh prices (closed) — don't trade it this cycle")
                 continue
             parts = [f"  {name}: bid {_fmt(tick.bid, d)} ask {_fmt(tick.ask, d)} spread {spread_points} points"]
-            h1 = None
+            h1, atr_h1 = None, 0.0
             for tf in ("H4", "H1", "M15"):
                 df = self.adapter.get_rates(name, tf, 120)
                 s = summarize_timeframe(df)
@@ -373,7 +474,7 @@ class TradingDesk:
                     f"RSI {s['rsi14']:.1f}, ATR {_fmt(s['atr14'], d)}"
                 )
                 if tf == "H1":
-                    h1 = df
+                    h1, atr_h1 = df, float(s["atr14"])
                 if tf == "M15" and "trading" in self.cfg:
                     parts.append(f"    EMA-cross bot signal (M15): {generate_signal(df, self.cfg['trading']).action}")
             if h1 is not None:
@@ -383,15 +484,23 @@ class TradingDesk:
                     f"last 6 H1 closes: {', '.join(_fmt(c, d) for c in h1['close'].tail(6))}"
                 )
             parts.append(long_term_context(self.adapter.get_rates(name, "D1", 2100), d))
+            rates = self.base_rates.get(self.adapter, name, now.date().isoformat())
+            parts.append(describe_base_rates(rates, tick.ask - tick.bid, atr_h1))
+            micro = microstructure(self.adapter, name, info, tick, now)
+            self._spread_ratio[name] = micro.spread_ratio
+            parts.append(micro.text)
             lines += parts
 
-        journal = self.journal.tail(int(self.desk_cfg.get("journal_entries_in_brief", 6)))
+        journal = self.journal.tail(int(self.desk_cfg.get("journal_entries_in_brief", 4)))
         lines += [
             "",
             "Desk journal — recent decisions, oldest first:" if journal else "Desk journal: empty (first cycle)",
         ]
         for entry in journal:
-            lines.append(f"  {entry.get('ts', '')[:16]} [{entry.get('mode')}] {entry.get('summary', '')}")
+            # Every role reads the brief every cycle, so each entry is capped.
+            summary = " ".join(str(entry.get("summary", "")).split())
+            summary = summary[:450] + ("…" if len(summary) > 450 else "")
+            lines.append(f"  {entry.get('ts', '')[:16]} [{entry.get('mode')}] {summary}")
         return "\n".join(lines)
 
     def run_agent(
@@ -570,6 +679,27 @@ class TradingDesk:
         take_profit = round(float(inp["take_profit"]), info.digits)
         day = self._day
         loss = daily_loss_pct(day.day_start_balance, float(account.equity)) if live else 0.0
+        now = self._now or datetime.now(timezone.utc)
+        positions = self._desk_positions()
+
+        # Risk Intelligence (code gate): most restrictive wins, nothing overrides it.
+        if self._directive.state == HALT_NEW:
+            return f"REJECTED: Risk Intelligence halt — {self._directive.describe()}"
+        if risk_pct > self._directive.max_risk_pct:
+            return (
+                f"REJECTED: Risk Intelligence caps risk at {self._directive.max_risk_pct:g}% right now "
+                f"({'; '.join(self._directive.reasons)}). Use risk_pct <= {self._directive.max_risk_pct:g}."
+            )
+        if now.weekday() == 4 and now.hour >= self.limits.friday_cutoff_hour_utc:
+            return f"REJECTED: no new trades after {self.limits.friday_cutoff_hour_utc}:00 UTC on Friday (weekend gap risk)"
+        if now.timestamp() - tick.time > 300:
+            return f"REJECTED: {symbol} prices are stale (last tick {int(now.timestamp() - tick.time)}s ago)"
+        spread_ratio = self._spread_ratio.get(symbol, 1.0)
+        if spread_ratio > self.limits.max_spread_multiple:
+            return (
+                f"REJECTED: {symbol} spread is {spread_ratio:.1f}x normal for this hour "
+                f"(limit {self.limits.max_spread_multiple:g}x) — thin liquidity"
+            )
 
         rejection = check_new_trade(
             direction=direction,
@@ -579,10 +709,10 @@ class TradingDesk:
             quote=quote,
             limits=self.limits,
             symbol=symbol,
-            open_position_symbols=[p.symbol for p in self._desk_positions()],
+            open_position_symbols=[p.symbol for p in positions],
             trades_today=day.trades_today,
             loss_today_pct=loss,
-        )
+        ) or currency_concentration(symbol, direction == "buy", [(p.symbol, p.type == 0) for p in positions])
         if rejection:
             return f"REJECTED: {rejection}"
 
@@ -632,6 +762,10 @@ class TradingDesk:
         plan = self._evaluate_trade(inp)
         if isinstance(plan, str):
             return plan
+        if self.trade_guard is not None:
+            refusal = self.trade_guard(plan.symbol, "buy" if plan.is_buy else "sell", plan.risk_pct)
+            if refusal:
+                return f"REJECTED: {refusal}"
         live = self.is_live()
         entry, order_id = plan.entry, None
         if live:
@@ -669,6 +803,7 @@ class TradingDesk:
                     "risk_amount": round(plan.actual_risk, 2),
                     "reward_risk": round(plan.reward_risk, 2),
                     "currency": plan.currency,
+                    **(self.trade_context or {}),
                 },
             )
         )

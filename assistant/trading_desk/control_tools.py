@@ -15,12 +15,26 @@ from trading_bot.config import live_trading_confirmed
 from trading_bot.trade_log import TradeLog
 
 
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
 def register_desk_tools(registry: ToolRegistry, repo_root: Path, cfg: dict) -> None:
     desk_cfg = cfg.get("trading_desk")
     if not desk_cfg:
         return
     store = DeskStateStore(repo_root / "state")
     journal = DeskJournal(repo_root / "logs" / "trading_desk.jsonl")
+    risk_state_path = repo_root / "state" / "trading_desk_risk.json"
+    briefing_path = repo_root / "state" / "daily_briefing.json"
     trade_log = TradeLog(repo_root / cfg["assistant"]["trade_log_path"])
     magic = int(desk_cfg["magic_number"])
 
@@ -48,12 +62,15 @@ def register_desk_tools(registry: ToolRegistry, repo_root: Path, cfg: dict) -> N
                 {"ts": e.get("ts"), "summary": e.get("summary"), "est_cost_usd": e.get("est_cost_usd")}
                 for e in journal.tail(5)
             ],
-            # What each team said last cycle, and which ones the CEO sent back.
+            # What each department/team said last cycle, and which ones the CEO sent back.
             "last_cycle_team_reports": {
-                team: (text[:1200] + "…" if len(text) > 1200 else text)
+                team: (text[:2500] + "…" if len(text) > 2500 else text)
                 for team, text in (journal.tail(1)[0].get("reports") or {}).items()
             } if journal.tail(1) else {},
             "last_cycle_followups": journal.tail(1)[0].get("followups") if journal.tail(1) else [],
+            "last_cycle_risk_gate": journal.tail(1)[0].get("risk_gate") if journal.tail(1) else None,
+            "risk_state": _read_json(risk_state_path),
+            "daily_briefing": {k: _read_json(briefing_path).get(k) for k in ("date", "created_utc", "web", "text")},
             "api_spend_estimate_usd_all_cycles": round(sum(e.get("est_cost_usd") or 0 for e in journal.tail(10**6)), 2),
         }
         try:
@@ -91,6 +108,15 @@ def register_desk_tools(registry: ToolRegistry, repo_root: Path, cfg: dict) -> N
 
     def resume(_: dict[str, Any]) -> str:
         store.update_control(paused=False)
+        risk = _read_json(risk_state_path)
+        if risk.get("drawdown_halted"):
+            # Re-arming after a peak-drawdown halt is the user's call, and only
+            # theirs: reset the peak to wherever equity is now.
+            _write_json(risk_state_path, {"peak_equity": 0.0, "drawdown_halted": False, "rearmed_after": risk})
+            return (
+                "Trading desk resumed and re-armed after the drawdown halt: the peak-drawdown limit now "
+                "measures from current equity. It runs again at the next hourly cycle."
+            )
         return "Trading desk resumed; it runs again at the next hourly cycle."
 
     def close_all(inp: dict[str, Any]) -> str:
@@ -149,7 +175,10 @@ def register_desk_tools(registry: ToolRegistry, repo_root: Path, cfg: dict) -> N
     ))
     registry.register(Tool(
         name="trading_desk_resume",
-        description="Resume a paused trading desk.",
+        description=(
+            "Resume a paused trading desk. Also re-arms it after a peak-drawdown halt by Risk "
+            "Intelligence — only do that when the user explicitly asks to resume or re-arm."
+        ),
         input_schema={"type": "object", "properties": {}, "additionalProperties": False},
         handler=resume,
     ))

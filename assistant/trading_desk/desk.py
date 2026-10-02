@@ -3,8 +3,10 @@
 Once an hour during the configured session (run by the daemon), code builds
 a compact market brief from MT5, and Alex decides whether to open, manage, or
 close positions through a deliberately small tool surface: candles,
-place_trade, close_position, move_stop_loss. No shell, no file access — so
-nothing here can loosen the limits in config.yaml.
+check_trade, place_trade, close_position, move_stop_loss. No shell, no file
+access — so nothing here can loosen the limits in config.yaml. With
+trading_desk.firm.enabled, Alex acts as CEO over a chain of teams (see
+firm.py); otherwise Alex decides alone.
 
 Every order goes through limits.check_new_trade() and is sized by code from
 the risk limit; the model never chooses a lot size. Real orders additionally
@@ -17,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -45,15 +48,7 @@ MAX_REQUESTS_PER_CYCLE = 6
 MARKET_STALE_SECONDS = 30 * 60
 CANDLE_TIMEFRAMES = ("M5", "M15", "H1", "H4", "D1")
 
-SYSTEM_PROMPT = """\
-You are Alex, running the user's trading desk on their Exness MetaTrader 5 account. Each hour \
-during the London/New York session you receive a market brief, then decide whether to open, \
-manage, or close positions using your tools. The brief states whether this is LIVE (real money) \
-or PAPER (logged only).
-
-The hard limits listed in the brief are enforced in code: any order that breaks one is rejected, \
-code sizes every position from the risk limit, and nothing you can do changes them.
-
+TRADING_PRINCIPLES = """\
 How to trade:
 - Capital preservation comes first. The user's goal sets direction, not urgency: never take a \
 trade you wouldn't take without it, never widen a stop or size up to make back a loss, and \
@@ -70,11 +65,79 @@ EMA-cross setup on EURUSD, GBPUSD and USDJPY found no edge after costs in any pe
 "EMA-cross bot signal" line as context, never as a reason to trade on its own.
 - Manage open positions: close or tighten a stop when the reason for the trade is gone, \
 otherwise let the stop-loss and take-profit do their job.
+"""
+
+SYSTEM_PROMPT = f"""\
+You are Alex, running the user's trading desk on their Exness MetaTrader 5 account. Each hour \
+during the London/New York session you receive a market brief, then decide whether to open, \
+manage, or close positions using your tools. The brief states whether this is LIVE (real money) \
+or PAPER (logged only).
+
+The hard limits listed in the brief are enforced in code: any order that breaks one is rejected, \
+code sizes every position from the risk limit, and nothing you can do changes them.
+
+{TRADING_PRINCIPLES}\
 - The user sees every trade on their phone with your reasoning — write it in 1-3 plain \
 sentences they can follow.
 - Finish with a 1-3 sentence summary of what you did and why (or why you stood aside). It is \
 saved to your journal and shown to you next cycle, so note anything you want to remember.
 """
+
+# $ per million tokens: (input, output, cache read). Cache writes bill at 1.25x input.
+MODEL_PRICES = {
+    "claude-opus-5-5": (4.0, 20.0, 0.20),
+    "claude-sonnet-5-5": (2.0, 10.0, 0.20),
+    "claude-haiku-4-5": (1.0, 5.0, 0.10),
+    "claude-opus-5": (5.0, 25.0, 0.50),
+}
+
+TRADE_TOOLS = ("get_candles", "check_trade", "place_trade", "close_position", "move_stop_loss")
+
+
+def empty_usage() -> dict[str, int]:
+    return {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+
+
+def estimate_cost(usage: dict[str, int], model: str) -> float:
+    p_in, p_out, p_cache_read = MODEL_PRICES.get(model, MODEL_PRICES["claude-opus-5-5"])
+    cost = (
+        usage["input_tokens"] * p_in
+        + usage["cache_creation_input_tokens"] * p_in * 1.25
+        + usage["cache_read_input_tokens"] * p_cache_read
+        + usage["output_tokens"] * p_out
+    ) / 1_000_000
+    return round(cost, 4)
+
+
+@dataclass
+class AgentResult:
+    text: str
+    actions: list[dict[str, Any]] = field(default_factory=list)
+    usage: dict[str, int] = field(default_factory=empty_usage)
+
+
+@dataclass
+class TradePlan:
+    """A trade that passed every hard limit, sized by code — what place_trade
+    would send and what check_trade reports."""
+
+    symbol: str
+    is_buy: bool
+    entry: float
+    stop_loss: float
+    take_profit: float
+    lots: float
+    risk_pct: float
+    actual_risk: float
+    reward_risk: float
+    currency: str
+
+    def describe(self) -> str:
+        return (
+            f"{'BUY' if self.is_buy else 'SELL'} {self.lots} {self.symbol} @ ~{self.entry} "
+            f"SL {self.stop_loss} TP {self.take_profit}; risk {money(self.actual_risk, self.currency)}, "
+            f"R:R {self.reward_risk:.2f}"
+        )
 
 
 def _fmt(value: float, digits: int) -> str:
@@ -232,18 +295,29 @@ class TradingDesk:
         day.cycles_today += 1
         self.store.save_day(day)
 
-        summary, actions, usage = self._ask_alex(brief)
-        self.journal.record(
-            {
-                "ts": now.isoformat(),
-                "mode": "live" if live else "paper",
-                "summary": summary,
-                "actions": actions,
-                "usage": usage,
-                "est_cost_usd": self._estimate_cost(usage),
-            }
-        )
-        return summary
+        entry: dict[str, Any] = {"ts": now.isoformat(), "mode": "live" if live else "paper"}
+        if self.desk_cfg.get("firm", {}).get("enabled"):
+            from assistant.trading_desk.firm import Firm
+
+            result = Firm(self).run(brief, has_positions=bool(positions))
+            entry.update(
+                summary=result.summary,
+                actions=result.actions,
+                reports=result.reports,
+                followups=result.followups,
+                cost_by_role=result.cost_by_role,
+                est_cost_usd=round(sum(result.cost_by_role.values()), 4),
+            )
+        else:
+            result = self.run_agent(SYSTEM_PROMPT, brief, self.build_registry(TRADE_TOOLS), MAX_REQUESTS_PER_CYCLE)
+            entry.update(
+                summary=result.text,
+                actions=result.actions,
+                usage=result.usage,
+                est_cost_usd=estimate_cost(result.usage, self.desk_cfg["model"]),
+            )
+        self.journal.record(entry)
+        return entry["summary"]
 
     def build_brief(self, now: datetime, account: Any, day: Any, loss: float, positions: list[Any], ticks: dict) -> str:
         live = self.is_live()
@@ -307,23 +381,34 @@ class TradingDesk:
             lines += parts
 
         journal = self.journal.tail(int(self.desk_cfg.get("journal_entries_in_brief", 6)))
-        lines += ["", "Your recent journal (oldest first):" if journal else "Your recent journal: empty (first cycle)"]
+        lines += [
+            "",
+            "Desk journal — recent decisions, oldest first:" if journal else "Desk journal: empty (first cycle)",
+        ]
         for entry in journal:
             lines.append(f"  {entry.get('ts', '')[:16]} [{entry.get('mode')}] {entry.get('summary', '')}")
         return "\n".join(lines)
 
-    def _ask_alex(self, brief: str) -> tuple[str, list[dict[str, Any]], dict[str, int]]:
-        registry = self.build_registry()
+    def run_agent(
+        self,
+        system: str,
+        content: str,
+        registry: ToolRegistry,
+        max_requests: int,
+        model: str | None = None,
+    ) -> AgentResult:
+        """One agent's tool-use loop: the CEO, a team, or Alex alone. Which tools
+        it gets is decided entirely by `registry` — only the CEO's (or solo
+        Alex's) registry contains place_trade / close_position / move_stop_loss."""
         tools = registry.as_api_tools()
-        messages: list[dict[str, Any]] = [{"role": "user", "content": brief}]
-        actions: list[dict[str, Any]] = []
-        usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+        messages: list[dict[str, Any]] = [{"role": "user", "content": content}]
+        result = AgentResult(text="")
 
-        for _ in range(MAX_REQUESTS_PER_CYCLE):
+        for _ in range(max_requests):
             response = self.client.beta.messages.create(
-                model=self.desk_cfg["model"],
+                model=model or self.desk_cfg["model"],
                 max_tokens=8000,
-                system=SYSTEM_PROMPT,
+                system=system,
                 tools=tools,
                 messages=messages,
                 output_config={"effort": self.desk_cfg.get("effort", "low")},
@@ -331,14 +416,15 @@ class TradingDesk:
                 betas=[FALLBACK_BETA],
                 fallbacks="default",
             )
-            for key in usage:
-                usage[key] += int(getattr(response.usage, key, 0) or 0)
+            for key in result.usage:
+                result.usage[key] += int(getattr(response.usage, key, 0) or 0)
 
             if response.stop_reason == "refusal":
-                return "the model declined this cycle (refusal) — no action taken", actions, usage
+                result.text = "the model declined this request (refusal) — no action taken"
+                return result
             if response.stop_reason != "tool_use":
-                text = "\n".join(b.text for b in response.content if b.type == "text").strip()
-                return text or "(no summary)", actions, usage
+                result.text = "\n".join(b.text for b in response.content if b.type == "text").strip() or "(no summary)"
+                return result
 
             messages.append({"role": "assistant", "content": response.content})
             results = []
@@ -346,28 +432,54 @@ class TradingDesk:
                 if block.type != "tool_use":
                     continue
                 output = registry.execute(block.name, block.input)
-                if block.name != "get_candles":
-                    actions.append({"tool": block.name, "input": block.input, "result": output})
+                if block.name not in ("get_candles", "check_trade"):
+                    result.actions.append({"tool": block.name, "input": block.input, "result": output})
                 results.append({"type": "tool_result", "tool_use_id": block.id, "content": output})
             messages.append({"role": "user", "content": results})
-        return "(hit the per-cycle request limit before finishing)", actions, usage
-
-    def _estimate_cost(self, usage: dict[str, int]) -> float:
-        prices = self.desk_cfg.get("price_per_mtok", {"input": 4.0, "output": 20.0})
-        p_in, p_out = float(prices["input"]), float(prices["output"])
-        cost = (
-            usage["input_tokens"] * p_in
-            + usage["cache_creation_input_tokens"] * p_in * 1.25
-            + usage["cache_read_input_tokens"] * p_in * 0.1
-            + usage["output_tokens"] * p_out
-        ) / 1_000_000
-        return round(cost, 4)
+        result.text = "(hit the request limit before finishing)"
+        return result
 
     # ----- tools ------------------------------------------------------------
 
-    def build_registry(self) -> ToolRegistry:
+    def build_registry(self, names: tuple[str, ...] = TRADE_TOOLS) -> ToolRegistry:
         registry = ToolRegistry()
-        registry.register(
+        for tool in self._all_tools():
+            if tool.name in names:
+                registry.register(tool)
+        return registry
+
+    def _all_tools(self) -> list[Tool]:
+        trade_schema = {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "direction": {"type": "string", "enum": ["buy", "sell"]},
+                "stop_loss": {"type": "number"},
+                "take_profit": {"type": "number"},
+                "risk_pct": {"type": "number", "description": "Optional; lower than the limit when less confident."},
+            },
+            "required": ["symbol", "direction", "stop_loss", "take_profit"],
+            "additionalProperties": False,
+        }
+        place_schema = {
+            **trade_schema,
+            "properties": {
+                **trade_schema["properties"],
+                "reasoning": {"type": "string", "description": "1-3 sentences, sent to the user."},
+            },
+            "required": [*trade_schema["required"], "reasoning"],
+        }
+        tools = [
+            Tool(
+                name="check_trade",
+                description=(
+                    "Dry run: run a proposed trade through the same hard-limit checks and position sizing "
+                    "that place_trade uses, and report the lot size, risk in money, reward:risk — or "
+                    "exactly why it would be rejected. Places nothing."
+                ),
+                input_schema=trade_schema,
+                handler=self._tool_check_trade,
+            ),
             Tool(
                 name="get_candles",
                 description="Recent OHLC candles for one symbol, oldest first, for a closer look than the brief gives.",
@@ -382,9 +494,7 @@ class TradingDesk:
                     "additionalProperties": False,
                 },
                 handler=self._tool_get_candles,
-            )
-        )
-        registry.register(
+            ),
             Tool(
                 name="place_trade",
                 description=(
@@ -392,23 +502,9 @@ class TradingDesk:
                     "from risk_pct (default and maximum: the per-trade risk limit) and rejects anything "
                     "that breaks a hard limit, saying why. Entry is the current ask for a buy, bid for a sell."
                 ),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "symbol": {"type": "string"},
-                        "direction": {"type": "string", "enum": ["buy", "sell"]},
-                        "stop_loss": {"type": "number"},
-                        "take_profit": {"type": "number"},
-                        "risk_pct": {"type": "number", "description": "Optional; lower than the limit when less confident."},
-                        "reasoning": {"type": "string", "description": "1-3 sentences, sent to the user."},
-                    },
-                    "required": ["symbol", "direction", "stop_loss", "take_profit", "reasoning"],
-                    "additionalProperties": False,
-                },
+                input_schema=place_schema,
                 handler=self._tool_place_trade,
-            )
-        )
-        registry.register(
+            ),
             Tool(
                 name="close_position",
                 description="Close one of the desk's open positions at market.",
@@ -419,9 +515,7 @@ class TradingDesk:
                     "additionalProperties": False,
                 },
                 handler=self._tool_close_position,
-            )
-        )
-        registry.register(
+            ),
             Tool(
                 name="move_stop_loss",
                 description="Move an open position's stop-loss toward profit (tighten only; widening is rejected).",
@@ -436,9 +530,9 @@ class TradingDesk:
                     "additionalProperties": False,
                 },
                 handler=self._tool_move_stop_loss,
-            )
-        )
-        return registry
+            ),
+        ]
+        return tools
 
     def _tool_get_candles(self, inp: dict[str, Any]) -> str:
         symbol = self._resolve(inp["symbol"])
@@ -454,10 +548,12 @@ class TradingDesk:
         ]
         return f"{symbol} {timeframe}, {len(rows)} candles (UTC):\n" + "\n".join(rows)
 
-    def _tool_place_trade(self, inp: dict[str, Any]) -> str:
+    def _evaluate_trade(self, inp: dict[str, Any]) -> TradePlan | str:
+        """Hard-limit checks + code sizing for a proposed trade. Returns the
+        sized plan, or "REJECTED: <why>". Shared by check_trade (dry run for the
+        risk team) and place_trade, so both see exactly the same numbers."""
         symbol = self._resolve(inp["symbol"])
         direction = str(inp["direction"]).lower()
-        reasoning = str(inp["reasoning"]).strip()
         risk_pct = float(inp.get("risk_pct") or self.limits.risk_per_trade_pct)
         live = self.is_live()
 
@@ -504,20 +600,42 @@ class TradingDesk:
                 "account's smallest position size. Use a tighter, still-valid stop or skip the trade."
             )
         lots = _round_to_step(sizing.lots, info.volume_step)
-        actual_risk = sl_distance * (info.trade_tick_value / info.trade_tick_size) * lots
-        reward_risk = abs(take_profit - entry) / sl_distance
-
-        order_id = None
         if live:
             margin = self.adapter.calc_margin(symbol, is_buy, lots, entry)
             if margin > 0.5 * float(account.margin_free):
                 return f"REJECTED: needs {margin:.2f} margin, more than half of free margin ({account.margin_free:.2f})"
+        return TradePlan(
+            symbol=symbol,
+            is_buy=is_buy,
+            entry=entry,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            lots=lots,
+            risk_pct=risk_pct,
+            actual_risk=sl_distance * (info.trade_tick_value / info.trade_tick_size) * lots,
+            reward_risk=abs(take_profit - entry) / sl_distance,
+            currency=account.currency,
+        )
+
+    def _tool_check_trade(self, inp: dict[str, Any]) -> str:
+        plan = self._evaluate_trade(inp)
+        if isinstance(plan, str):
+            return f"WOULD BE {plan}"
+        return f"WOULD BE ACCEPTED: {plan.describe()}"
+
+    def _tool_place_trade(self, inp: dict[str, Any]) -> str:
+        plan = self._evaluate_trade(inp)
+        if isinstance(plan, str):
+            return plan
+        live = self.is_live()
+        entry, order_id = plan.entry, None
+        if live:
             result = self.adapter.place_market_order(
-                symbol=symbol,
-                is_buy=is_buy,
-                volume=lots,
-                sl=stop_loss,
-                tp=take_profit,
+                symbol=plan.symbol,
+                is_buy=plan.is_buy,
+                volume=plan.lots,
+                sl=plan.stop_loss,
+                tp=plan.take_profit,
                 deviation=int(self.desk_cfg.get("deviation_points", 20)),
                 magic=self.magic,
                 comment=self.desk_cfg.get("order_comment", "alex-desk"),
@@ -530,33 +648,32 @@ class TradingDesk:
 
         self.trade_log.record(
             self.trade_log.new_record(
-                symbol=symbol,
-                action="BUY" if is_buy else "SELL",
+                symbol=plan.symbol,
+                action="BUY" if plan.is_buy else "SELL",
                 mode="live" if live else "paper",
-                lots=lots,
+                lots=plan.lots,
                 price=entry,
-                sl=stop_loss,
-                tp=take_profit,
-                reason=reasoning,
+                sl=plan.stop_loss,
+                tp=plan.take_profit,
+                reason=str(inp["reasoning"]).strip(),
                 order_id=order_id,
                 status=status,
                 extra={
                     "source": "alex_desk",
-                    "risk_pct": risk_pct,
-                    "risk_amount": round(actual_risk, 2),
-                    "reward_risk": round(reward_risk, 2),
-                    "currency": account.currency,
+                    "risk_pct": plan.risk_pct,
+                    "risk_amount": round(plan.actual_risk, 2),
+                    "reward_risk": round(plan.reward_risk, 2),
+                    "currency": plan.currency,
                 },
             )
         )
         if status not in ("filled", "simulated"):
             return f"Order FAILED at the broker: {status}. Nothing was opened."
 
-        day.trades_today += 1
-        self.store.save_day(day)
+        self._day.trades_today += 1
+        self.store.save_day(self._day)
         return (
-            f"{'Opened' if live else 'Paper-logged'} {direction.upper()} {lots} {symbol} @ {entry} "
-            f"SL {stop_loss} TP {take_profit}; risk {money(actual_risk, account.currency)}, R:R {reward_risk:.2f}"
+            f"{'Opened' if live else 'Paper-logged'} {plan.describe()}"
             + (f", ticket #{order_id}" if order_id else "")
         )
 

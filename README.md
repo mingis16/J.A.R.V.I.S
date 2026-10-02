@@ -171,6 +171,24 @@ or close positions with four tools: `get_candles`, `place_trade`, `close_positio
 and estimated API cost; every trade (paper or live) goes to `state/trades.jsonl` and is pushed to
 Telegram with entry, stop-loss, take-profit, risk, and Alex's reasoning.
 
+**Run as a firm, with Alex as CEO** (`trading_desk.firm`, in `assistant/trading_desk/firm.py`).
+Each cycle the work goes up a chain, and each team sees the report before it:
+
+| Team | Job | Tools |
+|---|---|---|
+| Quant Research | Reads the raw data and multi-year context; lists candidate setups with evidence | `get_candles` |
+| Analysts | Check the quants' work against the data, correct it, grade each setup STRONG / WEAK / REJECT | `get_candles` |
+| Market Strategy | Turns vetted setups into a concrete plan (entry, stop, target), weighing correlation, session, spread, goal | — |
+| Operational Risk | Dry-runs every proposed trade through the real limit and sizing code (`check_trade`); approves, amends, or rejects in money | `check_trade` |
+| **Alex (CEO)** | Reads all four reports, can send any team back with instructions (`request_followup`, capped per cycle), and makes the final decision | the trading tools |
+
+Only the CEO's tool set can place, close, or adjust trades — the division of labour is enforced
+by tool access, not just by prompts. When the quants find nothing (or the analysts reject
+everything) and no position is open, the middle of the chain is skipped to save API credit; the
+CEO still reviews the quants' work. Each team's report, any follow-ups, and the cost per role are
+journaled; ask Alex "what did the teams say?" to see the last cycle's reports.
+`trading_desk.firm.models` can put teams on a cheaper model; `enabled: false` makes Alex decide alone.
+
 **Hard limits, enforced in `assistant/trading_desk/limits.py`** (values in `trading_desk.limits`,
 chosen by the user — Alex can't change them): risk per trade (code sizes the lots; the model
 never picks a lot size), a daily loss stop measured on equity and persisted across restarts,

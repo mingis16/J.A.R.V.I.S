@@ -48,6 +48,12 @@ def register_desk_tools(registry: ToolRegistry, repo_root: Path, cfg: dict) -> N
                 {"ts": e.get("ts"), "summary": e.get("summary"), "est_cost_usd": e.get("est_cost_usd")}
                 for e in journal.tail(5)
             ],
+            # What each team said last cycle, and which ones the CEO sent back.
+            "last_cycle_team_reports": {
+                team: (text[:1200] + "…" if len(text) > 1200 else text)
+                for team, text in (journal.tail(1)[0].get("reports") or {}).items()
+            } if journal.tail(1) else {},
+            "last_cycle_followups": journal.tail(1)[0].get("followups") if journal.tail(1) else [],
             "api_spend_estimate_usd_all_cycles": round(sum(e.get("est_cost_usd") or 0 for e in journal.tail(10**6)), 2),
         }
         try:

@@ -257,8 +257,8 @@ class FakeClient:
         self.beta.messages = FakeBetaMessages(responses)
 
 
-def _cfg(live: bool = False) -> dict:
-    return {
+def _cfg(live: bool = False, firm: dict | None = None) -> dict:
+    cfg = {
         "assistant": {"trade_log_path": "state/trades.jsonl"},
         "trading_desk": {
             "enabled": True,
@@ -279,6 +279,9 @@ def _cfg(live: bool = False) -> dict:
             },
         },
     }
+    if firm is not None:
+        cfg["trading_desk"]["firm"] = firm
+    return cfg
 
 
 BUY = {
@@ -290,9 +293,9 @@ BUY = {
 }
 
 
-def _desk(tmp_path, responses, live=False, adapter=None):
+def _desk(tmp_path, responses, live=False, adapter=None, firm=None):
     client = FakeClient(responses)
-    desk = TradingDesk(tmp_path, _cfg(live), client, adapter=adapter or FakeAdapter())
+    desk = TradingDesk(tmp_path, _cfg(live, firm), client, adapter=adapter or FakeAdapter())
     return desk, client
 
 
@@ -396,3 +399,147 @@ def test_desk_trade_telegram_message_shows_entry_stop_target_and_reason():
     )
     assert "entry 1.1001" in msg and "SL 1.0981" in msg and "TP 1.1041" in msg
     assert "LIVE" in msg and "why: Trend up." in msg
+
+
+# ----- the firm: Quant -> Analysts -> Strategy -> Risk -> Alex (CEO) -------
+
+from assistant.trading_desk.firm import parse_count  # noqa: E402
+
+FIRM_ON = {"enabled": True, "max_followups_per_cycle": 2}
+CHECK = {k: v for k, v in BUY.items() if k != "reasoning"}
+
+
+def _role(call: dict) -> str:
+    system = call["system"]
+    for marker, role in (
+        ("Quantitative Research team", "quant"),
+        ("Analyst team", "analyst"),
+        ("Market Strategy team", "strategist"),
+        ("Operational Risk team", "risk"),
+        ("CEO of a small trading firm", "ceo"),
+    ):
+        if marker in system:
+            return role
+    return "?"
+
+
+def _tool_names(call: dict) -> set[str]:
+    return {t["name"] for t in call["tools"]}
+
+
+def _journal(tmp_path) -> dict:
+    return json.loads((tmp_path / "logs" / "trading_desk.jsonl").read_text().splitlines()[-1])
+
+
+def test_firm_full_chain_reports_up_and_only_ceo_trades(tmp_path):
+    desk, client = _desk(
+        tmp_path,
+        [
+            FakeResponse([FakeText("EURUSD aligned up on H4/H1/M15.\nCANDIDATES: 1")], "end_turn"),
+            FakeResponse([FakeText("EURUSD long: STRONG, levels verified.\nVETTED: 1")], "end_turn"),
+            FakeResponse([FakeText("Plan: buy EURUSD at market, SL 1.09810, TP 1.10410.")], "end_turn"),
+            FakeResponse([FakeToolUse("r1", "check_trade", CHECK)], "tool_use"),
+            FakeResponse([FakeText("APPROVE: risk within limits.")], "end_turn"),
+            FakeResponse([FakeToolUse("c1", "place_trade", BUY)], "tool_use"),
+            FakeResponse([FakeText("Bought EURUSD per the teams' plan.")], "end_turn"),
+        ],
+        firm=FIRM_ON,
+    )
+
+    summary = desk.run_cycle(NOW)
+
+    calls = client.beta.messages.calls
+    assert [_role(c) for c in calls] == ["quant", "analyst", "strategist", "risk", "risk", "ceo", "ceo"]
+    # Division of labour is enforced by tool access: only the CEO can trade.
+    for call in calls:
+        trading = _tool_names(call) & {"place_trade", "close_position", "move_stop_loss"}
+        assert bool(trading) == (_role(call) == "ceo")
+    assert _tool_names(calls[3]) == {"check_trade"}
+    # Each team sees the report before it; the CEO sees them all.
+    assert "EURUSD aligned up" in calls[1]["messages"][0]["content"]
+    assert "STRONG, levels verified" in calls[2]["messages"][0]["content"]
+    assert "Plan: buy EURUSD" in calls[3]["messages"][0]["content"]
+    ceo_input = calls[5]["messages"][0]["content"]
+    assert all(s in ceo_input for s in ("CANDIDATES: 1", "VETTED: 1", "Plan: buy", "APPROVE"))
+    # Risk's dry run used the real sizing code and placed nothing.
+    assert "WOULD BE ACCEPTED: BUY 0.1 EURUSDm" in calls[4]["messages"][-1]["content"][0]["content"]
+
+    assert summary == "Bought EURUSD per the teams' plan."
+    assert len(TradeLog(tmp_path / "state" / "trades.jsonl").tail()) == 1
+    entry = _journal(tmp_path)
+    assert set(entry["reports"]) == {"quant", "analyst", "strategist", "risk"}
+    assert set(entry["cost_by_role"]) == {"quant", "analyst", "strategist", "risk", "ceo"}
+    assert entry["est_cost_usd"] > 0
+
+
+def test_firm_quiet_hour_skips_middle_teams(tmp_path):
+    desk, client = _desk(
+        tmp_path,
+        [
+            FakeResponse([FakeText("No alignment anywhere.\nCANDIDATES: 0")], "end_turn"),
+            FakeResponse([FakeText("Agree with the quants; standing aside.")], "end_turn"),
+        ],
+        firm=FIRM_ON,
+    )
+
+    desk.run_cycle(NOW)
+
+    assert [_role(c) for c in client.beta.messages.calls] == ["quant", "ceo"]
+    reports = _journal(tmp_path)["reports"]
+    assert reports["analyst"].startswith("(skipped") and reports["risk"].startswith("(skipped")
+
+
+def test_ceo_can_send_a_team_back(tmp_path):
+    desk, client = _desk(
+        tmp_path,
+        [
+            FakeResponse([FakeText("Nothing.\nCANDIDATES: 0")], "end_turn"),
+            FakeResponse(
+                [FakeToolUse("f1", "request_followup", {"team": "quant", "instructions": "Recheck USDJPY H4 swing low."})],
+                "tool_use",
+            ),
+            FakeResponse([FakeText("Rechecked USDJPY: still no setup.\nCANDIDATES: 0")], "end_turn"),
+            FakeResponse([FakeText("Quants confirmed on recheck; no trade.")], "end_turn"),
+        ],
+        firm=FIRM_ON,
+    )
+
+    desk.run_cycle(NOW)
+
+    calls = client.beta.messages.calls
+    assert [_role(c) for c in calls] == ["quant", "ceo", "quant", "ceo"]
+    assert "Recheck USDJPY H4 swing low." in calls[2]["messages"][0]["content"]
+    assert "Revised Quant Research report" in calls[3]["messages"][-1]["content"][0]["content"]
+    assert _journal(tmp_path)["followups"] == [{"team": "quant", "instructions": "Recheck USDJPY H4 swing low."}]
+
+
+def test_followups_are_capped_per_cycle(tmp_path):
+    desk, client = _desk(
+        tmp_path,
+        [
+            FakeResponse([FakeText("CANDIDATES: 0")], "end_turn"),
+            FakeResponse(
+                [
+                    FakeToolUse("f1", "request_followup", {"team": "quant", "instructions": "again"}),
+                    FakeToolUse("f2", "request_followup", {"team": "analyst", "instructions": "run anyway"}),
+                ],
+                "tool_use",
+            ),
+            FakeResponse([FakeText("CANDIDATES: 0")], "end_turn"),  # the one allowed follow-up
+            FakeResponse([FakeText("Done.")], "end_turn"),
+        ],
+        firm={"enabled": True, "max_followups_per_cycle": 1},
+    )
+
+    desk.run_cycle(NOW)
+
+    results = client.beta.messages.calls[-1]["messages"][-1]["content"]
+    assert "Revised Quant Research report" in results[0]["content"]
+    assert results[1]["content"].startswith("Error: follow-up limit reached")
+
+
+def test_parse_count_reads_the_team_footer():
+    assert parse_count("blah\nCANDIDATES: 2", "CANDIDATES") == 2
+    assert parse_count("**CANDIDATES:** 0", "CANDIDATES") == 0
+    assert parse_count("VETTED: 1\n...\nVETTED: 0", "VETTED") == 0
+    assert parse_count("no footer at all", "CANDIDATES") is None

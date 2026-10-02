@@ -200,6 +200,7 @@ class TradingDesk:
             self.store.day(),
             now.date().isoformat(),
             float(account.balance) if live else float(self.desk_cfg["paper_equity"]),
+            "live" if live else "paper",
         )
         self._day = day
         self.store.save_day(day)

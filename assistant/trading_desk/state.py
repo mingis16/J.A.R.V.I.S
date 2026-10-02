@@ -25,6 +25,7 @@ class DeskDay:
     day_start_balance: float = 0.0
     trades_today: int = 0
     cycles_today: int = 0
+    mode: str = ""  # "paper" or "live" — the balance the anchor was taken from
 
 
 def _load(path: Path, cls: type) -> Any:
@@ -66,12 +67,17 @@ class DeskStateStore:
         _save(self.day_path, day)
 
 
-def roll_day(day: DeskDay, today: str, balance: float) -> DeskDay:
-    """New UTC day -> reset counters and anchor the daily stop on the current
-    balance. Also re-anchors if the anchor is still 0 (e.g. the account was
-    funded after the day started), since a 0 anchor would disable the stop."""
-    if day.day != today:
-        return DeskDay(day=today, day_start_balance=balance)
+def roll_day(day: DeskDay, today: str, balance: float, mode: str) -> DeskDay:
+    """New UTC day, or a paper<->live switch -> reset counters and anchor the
+    daily stop on the current balance (a paper anchor of 1000 against a live
+    equity of 11 read as a 98.9% loss and tripped the stop on 2026-10-02).
+    Also re-anchors if the anchor is still 0 (e.g. the account was funded
+    after the day started), since a 0 anchor would disable the stop."""
+    if day.day != today or day.mode != mode:
+        return DeskDay(day=today, day_start_balance=balance, mode=mode)
     if day.day_start_balance <= 0 < balance:
-        return DeskDay(day=today, day_start_balance=balance, trades_today=day.trades_today, cycles_today=day.cycles_today)
+        return DeskDay(
+            day=today, day_start_balance=balance, trades_today=day.trades_today,
+            cycles_today=day.cycles_today, mode=mode,
+        )
     return day

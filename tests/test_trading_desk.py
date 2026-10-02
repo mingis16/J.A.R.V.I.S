@@ -101,12 +101,19 @@ def test_daily_loss_pct_counts_only_losses():
 
 
 def test_roll_day_resets_and_reanchors():
-    old = DeskDay(day="2026-09-30", day_start_balance=1000, trades_today=3, cycles_today=9)
-    assert roll_day(old, "2026-10-01", 950) == DeskDay(day="2026-10-01", day_start_balance=950)
+    old = DeskDay(day="2026-09-30", day_start_balance=1000, trades_today=3, cycles_today=9, mode="live")
+    assert roll_day(old, "2026-10-01", 950, "live") == DeskDay(day="2026-10-01", day_start_balance=950, mode="live")
 
-    unfunded = DeskDay(day="2026-10-01", day_start_balance=0, trades_today=0, cycles_today=2)
-    funded = roll_day(unfunded, "2026-10-01", 1000)
+    unfunded = DeskDay(day="2026-10-01", day_start_balance=0, trades_today=0, cycles_today=2, mode="live")
+    funded = roll_day(unfunded, "2026-10-01", 1000, "live")
     assert funded.day_start_balance == 1000 and funded.cycles_today == 2
+
+
+def test_switching_paper_to_live_reanchors_the_daily_stop():
+    paper = DeskDay(day="2026-10-02", day_start_balance=1000, trades_today=2, cycles_today=5, mode="paper")
+    live = roll_day(paper, "2026-10-02", 11.10, "live")
+    assert live == DeskDay(day="2026-10-02", day_start_balance=11.10, mode="live")
+    assert daily_loss_pct(live.day_start_balance, 11.10) == 0.0
 
 
 def test_hourly_routine_runs_once_per_hour_after_minute():

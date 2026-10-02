@@ -57,3 +57,39 @@ def test_retry_delay_backs_off_and_caps():
     from assistant.telegram.bot import retry_delay_seconds
 
     assert [retry_delay_seconds(n) for n in range(1, 7)] == [5, 10, 20, 40, 60, 60]
+
+
+def test_dns_fallback_reuses_last_good_answer(monkeypatch):
+    import socket
+
+    from assistant.telegram import client
+
+    answers = [[("ok",)], socket.gaierror(11001, "getaddrinfo failed")]
+
+    def flaky(host, port, *args, **kwargs):
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(client, "_real_getaddrinfo", flaky)
+    monkeypatch.setattr(client, "_dns_cache", {})
+
+    assert client._getaddrinfo_with_fallback("api.telegram.org", 443) == [("ok",)]
+    assert client._getaddrinfo_with_fallback("api.telegram.org", 443) == [("ok",)]
+
+
+def test_dns_fallback_still_raises_with_nothing_cached(monkeypatch):
+    import socket
+
+    import pytest
+
+    from assistant.telegram import client
+
+    def failing(host, port, *args, **kwargs):
+        raise socket.gaierror(11001, "getaddrinfo failed")
+
+    monkeypatch.setattr(client, "_real_getaddrinfo", failing)
+    monkeypatch.setattr(client, "_dns_cache", {})
+    with pytest.raises(socket.gaierror):
+        client._getaddrinfo_with_fallback("api.telegram.org", 443)

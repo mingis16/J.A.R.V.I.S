@@ -8,11 +8,39 @@ curl both worked fine.
 """
 from __future__ import annotations
 
+import socket
 from typing import Any
 
 import httpx
 
 API_URL = "https://api.telegram.org/bot{token}/{method}"
+
+_dns_cache: dict[tuple, Any] = {}
+_real_getaddrinfo = socket.getaddrinfo
+
+
+def _getaddrinfo_with_fallback(host, port, *args, **kwargs):
+    key = (host, port, args, tuple(sorted(kwargs.items())))
+    try:
+        result = _real_getaddrinfo(host, port, *args, **kwargs)
+    except socket.gaierror:
+        if key in _dns_cache:
+            return _dns_cache[key]
+        raise
+    _dns_cache[key] = result
+    return result
+
+
+def install_dns_fallback() -> None:
+    """Reuse the last good DNS answer when a lookup fails.
+
+    This machine's network DNS (a carrier/hotspot resolver; public resolvers
+    are blocked) intermittently fails api.telegram.org lookups with
+    getaddrinfo errors while the connection itself works — it took the bot
+    offline for minutes at a time. TLS still verifies the certificate against
+    the hostname, so a stale cached address can only fail, never be spoofed.
+    """
+    socket.getaddrinfo = _getaddrinfo_with_fallback
 
 
 class TelegramClient:

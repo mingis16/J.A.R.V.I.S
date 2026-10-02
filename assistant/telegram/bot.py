@@ -20,7 +20,7 @@ from typing import Any
 import httpx
 
 from assistant.orchestrator import Orchestrator
-from assistant.telegram.client import TelegramClient
+from assistant.telegram.client import TelegramClient, install_dns_fallback
 from trading_bot.trade_log import TradeLog
 
 from signal_engine.config import SignalEngineConfig
@@ -238,6 +238,7 @@ def main() -> int:
     # httpx logs every request URL at INFO, and Telegram Bot API URLs embed the
     # bot token — so INFO here wrote the token to the log on every 25s poll.
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    install_dns_fallback()
 
     load_env()
     token = os.environ.get("TELEGRAM_BOT_TOKEN")

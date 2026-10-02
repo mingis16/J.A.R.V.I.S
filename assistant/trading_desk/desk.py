@@ -63,6 +63,11 @@ level, sensible volatility. Put the stop beyond the level that would prove the i
 the take-profit at a realistic target that meets the minimum reward:risk.
 - Spread is a real cost on a small account. Prefer the tightest-spread symbols and avoid stops \
 that are only a few spreads wide.
+- Use the long-term context in the brief (8 years of daily history per symbol: where price sits \
+in its multi-year and 52-week range, typical daily range) to judge whether a target is realistic \
+and a stop is outside normal noise. Historical evidence: an 8.2-year walk-forward backtest of the \
+EMA-cross setup on EURUSD, GBPUSD and USDJPY found no edge after costs in any period — treat the \
+"EMA-cross bot signal" line as context, never as a reason to trade on its own.
 - Manage open positions: close or tighten a stop when the reason for the trade is gone, \
 otherwise let the stop-loss and take-profit do their job.
 - The user sees every trade on their phone with your reasoning — write it in 1-3 plain \
@@ -93,6 +98,22 @@ def summarize_timeframe(df: pd.DataFrame) -> dict[str, float | str]:
         "rsi14": float(rsi(close, 14).iloc[-1]),
         "atr14": float(atr(df, 14).iloc[-1]),
     }
+
+
+def long_term_context(d1: pd.DataFrame, digits: int) -> str:
+    """Multi-year daily context: where price sits in its full-history and
+    52-week ranges, and the typical daily range (for realistic stops/targets)."""
+    close = float(d1["close"].iloc[-1])
+    years = (d1["time"].iloc[-1] - d1["time"].iloc[0]).days / 365.25
+    low, high = float(d1["low"].min()), float(d1["high"].max())
+    position = (close - low) / (high - low) * 100 if high > low else 50.0
+    year = d1.tail(260)
+    avg_daily_range = float((d1["high"] - d1["low"]).tail(20).mean())
+    return (
+        f"    {years:.1f}y daily history: range {_fmt(low, digits)}-{_fmt(high, digits)}, price at {position:.0f}% of it; "
+        f"52-week range {_fmt(float(year['low'].min()), digits)}-{_fmt(float(year['high'].max()), digits)}; "
+        f"avg daily range (20d) {_fmt(avg_daily_range, digits)}"
+    )
 
 
 def money(amount: float, currency: str) -> str:
@@ -199,7 +220,7 @@ class TradingDesk:
         now_ts = now.timestamp()
         ticks = {name: self.adapter.get_tick(name) for name in self.symbols.values()}
         if all(now_ts - t.time > MARKET_STALE_SECONDS for t in ticks.values()):
-            return "market closed (no fresh prices) — skipped"
+            return "market closed or MT5 offline (no fresh prices in 30 min) — skipped"
 
         positions = self._desk_positions()
         loss = daily_loss_pct(day.day_start_balance, float(account.equity)) if live else 0.0
@@ -281,6 +302,7 @@ class TradingDesk:
                     f"    last 24h: high {_fmt(last24['high'].max(), d)}, low {_fmt(last24['low'].min(), d)}; "
                     f"last 6 H1 closes: {', '.join(_fmt(c, d) for c in h1['close'].tail(6))}"
                 )
+            parts.append(long_term_context(self.adapter.get_rates(name, "D1", 2100), d))
             lines += parts
 
         journal = self.journal.tail(int(self.desk_cfg.get("journal_entries_in_brief", 6)))

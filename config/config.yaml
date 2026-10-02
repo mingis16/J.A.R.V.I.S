@@ -60,7 +60,7 @@ trading_desk:
   # JARVIS_CONFIRM_LIVE=YES_I_UNDERSTAND_THE_RISK in .env — otherwise every
   # trade is paper-logged only. Every trade is pushed to Telegram.
   enabled: true
-  live: false
+  live: true
   symbols: ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"]  # base names; the account's suffix (m/c) is found automatically
   session_hours_utc: [7, 20]   # London open to NY afternoon; SL/TP stay on the broker outside these hours
   run_at_minute: 2             # just after each H1 candle closes

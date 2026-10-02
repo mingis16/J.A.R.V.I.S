@@ -543,3 +543,10 @@ def test_parse_count_reads_the_team_footer():
     assert parse_count("**CANDIDATES:** 0", "CANDIDATES") == 0
     assert parse_count("VETTED: 1\n...\nVETTED: 0", "VETTED") == 0
     assert parse_count("no footer at all", "CANDIDATES") is None
+
+
+def test_only_one_decision_per_hour(tmp_path):
+    desk, client = _desk(tmp_path, [FakeResponse([FakeText("Stood aside.")], "end_turn")])
+    desk.run_cycle(NOW)  # 12:02
+    assert "already decided this hour" in desk.run_cycle(NOW.replace(minute=50))
+    assert len(client.beta.messages.calls) == 1

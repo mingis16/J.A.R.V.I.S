@@ -249,6 +249,11 @@ class TradingDesk:
         start_hour, end_hour = self.desk_cfg.get("session_hours_utc", [0, 24])
         if not (start_hour <= now.hour < end_hour):
             return f"outside session hours ({start_hour:02d}:00-{end_hour:02d}:00 UTC) — skipped"
+        last = self.journal.tail(1)
+        if last and last[0].get("ts", "")[:13] == now.isoformat()[:13]:
+            # One decision per hourly candle. Without this, every daemon restart
+            # re-ran (and re-paid for) a cycle the previous process already did.
+            return f"already decided this hour (at {last[0]['ts'][11:16]} UTC) — skipped"
 
         self.adapter.connect()
         try:

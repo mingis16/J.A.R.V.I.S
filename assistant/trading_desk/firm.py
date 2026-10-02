@@ -32,7 +32,8 @@ FIRM_CONTEXT = """\
 You work at a small trading firm run by Alex (the CEO) that trades the user's Exness MetaTrader 5 \
 account. The hard limits in the brief are enforced in code and never change. Write tight, \
 specific reports with numbers — the CEO reads every one before deciding, and every report costs \
-the user money. Only the CEO can place or change trades.
+the user money: keep yours under 200 words (plus any required footer line), and give a symbol \
+with nothing notable one line. Only the CEO can place or change trades.
 """
 
 
@@ -130,8 +131,9 @@ check_trade accepts the revised trade. You can always choose to do less than the
 {TRADING_PRINCIPLES}\
 - The user sees every trade on their phone with your reasoning. Write it in 1-3 plain sentences, \
 naming the evidence the teams found.
-- Finish with a 1-3 sentence summary of what you decided and why, including any team you sent \
-back or overruled. It is saved to the desk journal and shown to everyone next cycle.
+- Finish with a summary under 120 words: what you decided and why, any team you sent back or \
+overruled, and what would change your mind next cycle. It is saved to the desk journal and shown \
+to everyone next cycle.
 """
 
 CEO_TOOLS = ("get_candles", "check_trade", "place_trade", "close_position", "move_stop_loss")

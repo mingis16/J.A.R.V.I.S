@@ -10,17 +10,29 @@ from assistant.voice.stt import WhisperTranscriber
 from assistant.voice.tts import build_speaker
 
 
+GREETINGS = ("hey", "hi", "hello", "hay", "hei", "ok", "okay", "yo")
+# How Whisper tends to write "Alex" when it mishears it.
+NAME_VARIANTS = {"alex": ("alex", "alix", "alec", "aleks", "allex", "alexa")}
+_SEP = r"[\s,.!?;:-]+"  # Whisper punctuates freely: "Hey, Alex." / "Hey Alex!"
+
+
 def extract_command(transcript: str, wake_word: str) -> tuple[bool, str]:
-    """Check whether `transcript` contains the wake word, and if so return the
-    text spoken after it (may be empty, meaning "just said the name").
+    """Check whether `transcript` calls the assistant, and if so return the
+    text spoken after the call (may be empty, meaning "just said the name").
+
+    Accepts any greeting + the name anywhere ("Hey Alex", "hi, Alex",
+    "Hello Alex") or the bare name opening the utterance ("Alex, what's...").
+    Only "hey alex" used to work — "Hi Alex" was silently ignored.
 
     Pure/testable: no audio, no model calls.
     """
-    # Whisper punctuates freely ("Hey, Alex." / "Hey Alex!"), so let any run
-    # of spaces/punctuation stand in for the space between wake-word words.
-    words = [re.escape(w) for w in wake_word.split()]
-    pattern = re.compile(r"\b" + r"[\s,.!?;:-]+".join(words) + r"\b", re.IGNORECASE)
-    match = pattern.search(transcript)
+    words = wake_word.lower().split()
+    names = NAME_VARIANTS.get(words[-1], (words[-1],))
+    name_re = "(?:" + "|".join(re.escape(n) for n in names) + ")"
+    greet_re = "(?:" + "|".join(re.escape(g) for g in sorted({*GREETINGS, *words[:-1]})) + ")"
+    match = re.search(rf"\b{greet_re}{_SEP}{name_re}\b", transcript, re.IGNORECASE) or re.match(
+        rf"^\W*{name_re}\b", transcript, re.IGNORECASE
+    )
     if not match:
         return False, ""
     remainder = transcript[match.end() :].strip(" ,.:;-!?\"'")
@@ -40,9 +52,11 @@ class VoiceAssistant:
         self.orchestrator = Orchestrator(repo_root, cfg)
         self.listener = Listener(
             sample_rate=voice_cfg.get("sample_rate", 16000),
-            silence_multiplier=voice_cfg.get("vad_silence_multiplier", 3.0),
+            silence_multiplier=voice_cfg.get("vad_silence_multiplier", 2.0),
+            max_threshold=voice_cfg.get("vad_max_threshold", 0.08),
             min_speech_ms=voice_cfg.get("vad_min_speech_ms", 200),
             silence_hangover_ms=voice_cfg.get("vad_silence_hangover_ms", 800),
+            max_utterance_s=voice_cfg.get("vad_max_utterance_s", 10.0),
         )
         self.transcriber = WhisperTranscriber(
             model_size=voice_cfg.get("whisper_model", "base"),
@@ -57,25 +71,33 @@ class VoiceAssistant:
             self.speaker.speak(text)
         except Exception as exc:
             print(f"(TTS failed: {type(exc).__name__}: {exc} — reply was printed above, just not spoken)")
+        # The mic stays open while speaking; drop our own voice so it isn't
+        # transcribed as the user's next command.
+        self.listener.flush()
 
     def run(self) -> int:
-        print(f"{self.name} is listening. Say '{self.wake_word}' to wake it, Ctrl+C to quit.")
+        print(
+            f"{self.name} is listening. Say 'Hey {self.name}' (or 'Hi {self.name}', or start with "
+            f"'{self.name}, ...') to wake it, Ctrl+C to quit."
+        )
         print("Calibrating microphone for ambient noise...")
-        self.listener.calibrate_noise_floor()
-        print("Ready.")
-
-        while True:
-            try:
-                if self._handle_one_utterance() == "exit":
+        try:
+            self.listener.calibrate_noise_floor()
+            print(f"Ready. (speech threshold {self.listener._threshold():.3f})")
+            while True:
+                try:
+                    if self._handle_one_utterance() == "exit":
+                        return 0
+                except KeyboardInterrupt:
+                    print()
                     return 0
-            except KeyboardInterrupt:
-                print()
-                return 0
-            except Exception as exc:
-                # One bad utterance (mic hiccup, transcription error) must not
-                # end a session that's meant to run all day.
-                print(f"Voice loop error, continuing: {type(exc).__name__}: {exc}", file=sys.stderr)
-                time.sleep(1)
+                except Exception as exc:
+                    # One bad utterance (mic hiccup, transcription error) must not
+                    # end a session that's meant to run all day.
+                    print(f"Voice loop error, continuing: {type(exc).__name__}: {exc}", file=sys.stderr)
+                    time.sleep(1)
+        finally:
+            self.listener.close()
 
     def _handle_one_utterance(self) -> str | None:
         audio = self.listener.listen_for_utterance(timeout=None)
@@ -85,7 +107,7 @@ class VoiceAssistant:
         transcript = self.transcriber.transcribe(audio, self.listener.sample_rate)
         if not transcript:
             return None
-        print(f"[heard] {transcript}")
+        print(f"[heard {time.strftime('%H:%M:%S')}] {transcript}")
 
         woke, command = extract_command(transcript, self.wake_word)
         if not woke:

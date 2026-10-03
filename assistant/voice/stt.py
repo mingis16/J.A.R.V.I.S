@@ -18,6 +18,10 @@ class WhisperTranscriber:
             audio,
             language="en",
             beam_size=1,
-            vad_filter=False,  # we do our own VAD before this ever gets called
+            # Our energy VAD only finds "loud"; Whisper's Silero VAD then drops
+            # the non-speech parts (music, TV effects) that it otherwise
+            # hallucinates into loops like "I'm sorry, I'm sorry, I'm sorry".
+            vad_filter=True,
+            condition_on_previous_text=False,
         )
         return " ".join(seg.text.strip() for seg in segments).strip()

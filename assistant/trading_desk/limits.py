@@ -9,6 +9,21 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
+
+
+def fx_market_open(now: datetime) -> bool:
+    """Spot FX trades from about Sunday 22:00 to Friday 21:00 UTC. Checked before
+    connecting to MT5, so closed hours cost nothing (and don't hang on a
+    terminal that has no live prices to give)."""
+    weekday = now.weekday()  # Monday=0 .. Sunday=6
+    if weekday == 5:
+        return False
+    if weekday == 6:
+        return now.hour >= 22
+    if weekday == 4:
+        return now.hour < 21
+    return True
 
 
 @dataclass(frozen=True)

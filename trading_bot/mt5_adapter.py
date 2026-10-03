@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -13,6 +14,10 @@ from trading_bot.config import MT5Credentials, TIMEFRAME_NAMES
 logger = logging.getLogger("trading_bot.mt5_adapter")
 
 _TIMEFRAME_MAP = {name: getattr(mt5, f"TIMEFRAME_{name}") for name in TIMEFRAME_NAMES}
+
+# MetaTrader5 IPC failures (send failed / no connection / timeout) between this
+# process and the terminal — transient, worth one retry.
+_IPC_ERRORS = {-10001, -10004, -10005}
 
 # Broker filling-mode support varies; try in this order until one is accepted.
 _FILLING_MODES = (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN)
@@ -58,15 +63,26 @@ class MT5Adapter:
                 return
             mt5.shutdown()
 
-        ok = self._initialize(
-            login=self._creds.login,
-            password=self._creds.password,
-            server=self._creds.server,
-        )
+        ok = self._login()
+        if not ok and mt5.last_error()[0] in _IPC_ERRORS:
+            # The terminal was busy (downloading history for newly added symbols)
+            # or restarting — on 2026-10-02 one such timeout cost a whole trading
+            # hour. One retry turns that into a few seconds' delay.
+            logger.warning("MT5 initialize() failed with %s; retrying once.", mt5.last_error())
+            mt5.shutdown()
+            time.sleep(5)
+            ok = self._login()
         if not ok:
             raise RuntimeError(f"MT5 initialize() failed: {mt5.last_error()}")
         self._connected = True
         logger.info("Connected to MT5 account %s on %s", self._creds.login, self._creds.server)
+
+    def _login(self) -> bool:
+        return self._initialize(
+            login=self._creds.login,
+            password=self._creds.password,
+            server=self._creds.server,
+        )
 
     def ensure_connected(self) -> None:
         """Reconnects if the terminal link dropped (terminal closed/restarted,

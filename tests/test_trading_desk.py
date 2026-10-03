@@ -717,3 +717,22 @@ def test_daily_briefing_falls_back_without_web_and_caches(tmp_path):
     assert len(client.beta.messages.calls) == 2  # web attempt, then fallback
     text2, cost2 = briefing.get(NOW.replace(hour=15), "snapshot")
     assert cost2 == 0 and len(client.beta.messages.calls) == 2  # cached for the day
+
+
+from assistant.trading_desk.limits import fx_market_open  # noqa: E402
+
+
+def test_fx_market_hours():
+    assert fx_market_open(datetime(2026, 10, 2, 20, 59, tzinfo=timezone.utc)) is True    # Fri before close
+    assert fx_market_open(datetime(2026, 10, 2, 21, 0, tzinfo=timezone.utc)) is False    # Fri close
+    assert fx_market_open(datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)) is False    # Saturday
+    assert fx_market_open(datetime(2026, 10, 4, 21, 59, tzinfo=timezone.utc)) is False   # Sun before open
+    assert fx_market_open(datetime(2026, 10, 4, 22, 0, tzinfo=timezone.utc)) is True     # Sun open
+    assert fx_market_open(NOW) is True                                                   # Thursday
+
+
+def test_weekend_skips_without_touching_mt5_or_claude(tmp_path):
+    desk, client = _desk(tmp_path, [])
+    result = desk.run_cycle(datetime(2026, 10, 3, 9, 2, tzinfo=timezone.utc))
+    assert "weekend" in result
+    assert desk.adapter.connected is False and client.beta.messages.calls == []

@@ -44,6 +44,7 @@ from assistant.trading_desk.limits import (
     check_stop_move,
     currency_concentration,
     daily_loss_pct,
+    fx_market_open,
     min_stop_distance,
     pre_cycle_directive,
 )
@@ -272,6 +273,8 @@ class TradingDesk:
         start_hour, end_hour = self.desk_cfg.get("session_hours_utc", [0, 24])
         if not (start_hour <= now.hour < end_hour):
             return f"outside session hours ({start_hour:02d}:00-{end_hour:02d}:00 UTC) — skipped"
+        if not fx_market_open(now):
+            return "FX market closed for the weekend — skipped"
         last = self.journal.tail(1)
         if last and last[0].get("ts", "")[:13] == now.isoformat()[:13]:
             # One decision per hourly candle. Without this, every daemon restart

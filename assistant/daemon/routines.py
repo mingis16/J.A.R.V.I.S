@@ -16,6 +16,7 @@ import anthropic
 
 from assistant.daemon.proposals import ProposalLog
 from assistant.daemon.restricted_tools import build_readonly_registry
+from assistant.trading_desk.limits import fx_market_open
 from trading_bot.pidfile import read_live_pid, read_pid
 from trading_bot.trade_log import TradeLog
 
@@ -56,6 +57,10 @@ def signal_engine_check(ctx: RoutineContext) -> None:
     week, not just a notification trigger."""
     if "signal_engine" not in ctx.cfg:
         logger.info("signal_engine_check: no signal_engine config block — skipping.")
+        return
+
+    if not fx_market_open(datetime.now(timezone.utc)):
+        logger.info("signal_engine_check: FX market closed — skipping.")
         return
 
     se_cfg = SignalEngineConfig.from_yaml(ctx.cfg, ctx.repo_root)
